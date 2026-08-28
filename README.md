@@ -50,6 +50,13 @@ normale App nutzbar (Icon auf dem Homescreen), ohne App Store.
   annehmen möchte). Mitfahrer sehen die Fahrt weiterhin, können aber nicht
   mehr darüber buchen; sind noch Plätze frei, wird stattdessen der Hinweis
   angezeigt, dass Restplätze über andere Plattformen gebucht werden können.
+- **Fahrer können eigene Strecken anlegen**: Über "🗺️ Meine Strecken" im
+  eigenen Bereich kann ein Fahrer komplett eigenständig neue Strecken mit
+  Start/Ziel/Zwischenstopps, Adressen, Mitfahrbeiträgen und
+  Entfernungsberechnung anlegen und verwalten — unabhängig vom Admin. Beim
+  Veröffentlichen einer Fahrt stehen weiterhin **alle** Strecken zur Wahl
+  (auch vom Admin oder anderen Fahrern angelegte), bearbeiten/löschen darf
+  ein Fahrer aber nur seine eigenen.
 - **Flexible Datumssuche**: Findet eine Suche mit Datum+Flexibilität eine
   Fahrt an einem abweichenden Tag, erscheint ein Hinweis wie "Diese Fahrt
   findet 2 Tage später statt als gesucht."
@@ -82,6 +89,8 @@ normale App nutzbar (Icon auf dem Homescreen), ohne App Store.
    - `supabase/migration_15_segment_verfuegbarkeit_suche.sql` (passgenaue Verfügbarkeit für gesuchte Verbindung)
    - `supabase/migration_16_selbstanmeldung.sql` (Selbstanmeldung für Mitfahrer/Fahrer ohne Einladungslink)
    - `supabase/migration_17_eur_fahrerprofil_schliessen.sql` (EUR-Basis, Fahrer-Zahlungsinfo/-währung/-rate, Fahrten schließen/öffnen)
+   - `supabase/migration_18_fahrer_eigene_strecken.sql` (Fahrer können eigene Strecken anlegen/verwalten)
+   - `supabase/migration_19_fahrer_eigene_autos.sql` (Fahrer können eigene Autos anlegen/verwalten)
 3. Unter **Authentication → Users** einen Benutzer für dich selbst anlegen
    (E-Mail + Passwort) — das ist dein Admin-Login für `/admin`.
 4. Unter **Project Settings → API** findest du:

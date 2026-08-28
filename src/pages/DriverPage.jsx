@@ -14,6 +14,453 @@ function formatTime(timeStr) {
   return timeStr?.slice(0, 5)
 }
 
+function emptyAddress() {
+  return { name: '', postal_code: '', street: '', house_number: '', country: '', maps_link: '' }
+}
+
+function AddressFields({ value, onChange, prefix }) {
+  return (
+    <>
+      <div className="row">
+        <div>
+          <label>PLZ</label>
+          <input value={value.postal_code} onChange={(e) => onChange({ ...value, postal_code: e.target.value })} placeholder="79098" />
+        </div>
+        <div style={{ flex: 2 }}>
+          <label>Stadt</label>
+          <input value={value.name} onChange={(e) => onChange({ ...value, name: e.target.value })} placeholder={prefix ? `${prefix} Stadt` : 'Stadt'} required />
+        </div>
+      </div>
+      <div className="row">
+        <div style={{ flex: 2 }}>
+          <label>Straße</label>
+          <input value={value.street} onChange={(e) => onChange({ ...value, street: e.target.value })} placeholder="Bahnhofstraße" />
+        </div>
+        <div>
+          <label>Hausnr.</label>
+          <input value={value.house_number} onChange={(e) => onChange({ ...value, house_number: e.target.value })} placeholder="12" />
+        </div>
+      </div>
+      <label>Land</label>
+      <input value={value.country} onChange={(e) => onChange({ ...value, country: e.target.value })} placeholder="z.B. Deutschland" />
+      <label>Google-Maps-Link</label>
+      <div className="row">
+        <input value={value.maps_link} onChange={(e) => onChange({ ...value, maps_link: e.target.value })} placeholder="https://maps.app.goo.gl/..." />
+        {value.maps_link && (
+          <a href={value.maps_link} target="_blank" rel="noreferrer" style={{ flex: 'none' }}>
+            <button type="button" className="secondary" style={{ height: '100%' }}>📍</button>
+          </a>
+        )}
+      </div>
+    </>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Eigene Autos eines Fahrers: anlegen, bearbeiten, löschen.
+function DriverCarsManager({ token, onCarsChanged }) {
+  const [ownCars, setOwnCars] = useState([])
+  const [name, setName] = useState('')
+  const [notes, setNotes] = useState('')
+  const [createError, setCreateError] = useState(null)
+  const [drafts, setDrafts] = useState({})
+  const [savedId, setSavedId] = useState(null)
+
+  const loadOwnCars = useCallback(async () => {
+    const { data } = await supabase.rpc('fn_driver_list_own_cars', { p_token: token })
+    const cars = data?.cars || []
+    setOwnCars(cars)
+    const nextDrafts = {}
+    for (const c of cars) nextDrafts[c.id] = { name: c.name, notes: c.notes || '' }
+    setDrafts(nextDrafts)
+  }, [token])
+
+  useEffect(() => { loadOwnCars() }, [loadOwnCars])
+
+  async function createCar(e) {
+    e.preventDefault()
+    setCreateError(null)
+    if (!name.trim()) return
+    const { data, error: err } = await supabase.rpc('fn_driver_create_car', { p_token: token, p_name: name.trim(), p_notes: notes.trim() })
+    if (err || data?.error) { setCreateError('Auto konnte nicht angelegt werden.'); return }
+    setName(''); setNotes('')
+    loadOwnCars()
+    onCarsChanged?.()
+  }
+
+  async function saveCar(c) {
+    const draft = drafts[c.id] || { name: c.name, notes: c.notes || '' }
+    const { error: err } = await supabase.rpc('fn_driver_update_car', {
+      p_token: token, p_car_id: c.id, p_name: draft.name, p_notes: draft.notes,
+    })
+    if (err) { alert('Auto konnte nicht gespeichert werden.'); return }
+    setSavedId(c.id)
+    setTimeout(() => setSavedId(null), 1500)
+    loadOwnCars()
+    onCarsChanged?.()
+  }
+
+  async function deleteCar(id) {
+    if (!confirm('Auto löschen? (Fahrten, die dieses Auto nutzen, bleiben erhalten, aber ohne Autozuordnung.)')) return
+    await supabase.rpc('fn_driver_delete_car', { p_token: token, p_car_id: id })
+    loadOwnCars()
+    onCarsChanged?.()
+  }
+
+  return (
+    <div style={{ marginTop: 12 }}>
+      <h3>Neues Auto</h3>
+      <form onSubmit={createCar}>
+        <label>Name</label>
+        <input value={name} onChange={(e) => setName(e.target.value)} placeholder="z.B. VW Passat (blau)" required />
+        <label>Notiz (optional)</label>
+        <input value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="z.B. Kennzeichen, Farbe" />
+        {createError && <div className="notice error" style={{ marginTop: 12 }}>{createError}</div>}
+        <button style={{ marginTop: 12, width: '100%' }}>Auto hinzufügen</button>
+      </form>
+
+      <h3 style={{ marginTop: 20 }}>Meine Autos</h3>
+      {ownCars.length === 0 && <div className="empty-state">Noch keine eigenen Autos angelegt.</div>}
+      {ownCars.map((c) => {
+        const draft = drafts[c.id] || { name: c.name, notes: c.notes || '' }
+        return (
+          <div className="card" key={c.id}>
+            <label>Name</label>
+            <input
+              value={draft.name}
+              onChange={(e) => setDrafts((prev) => ({ ...prev, [c.id]: { ...prev[c.id], name: e.target.value } }))}
+            />
+            <label>Notiz</label>
+            <input
+              value={draft.notes}
+              onChange={(e) => setDrafts((prev) => ({ ...prev, [c.id]: { ...prev[c.id], notes: e.target.value } }))}
+            />
+            <div className="row" style={{ marginTop: 10 }}>
+              <button className="secondary" onClick={() => saveCar(c)}>{savedId === c.id ? '✓ Gespeichert' : 'Speichern'}</button>
+              <button className="danger" onClick={() => deleteCar(c.id)}>Löschen</button>
+            </div>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Eigene Strecken eines Fahrers: anlegen, Zwischenstopps verwalten,
+// Reihenfolge ändern, Entfernungen berechnen — analog zum Admin-Bereich,
+// aber beschränkt auf die vom Fahrer selbst angelegten Strecken.
+function DriverRoutesManager({ token, onRoutesChanged }) {
+  const [ownRoutes, setOwnRoutes] = useState([])
+  const [routeName, setRouteName] = useState('')
+  const [totalPrice, setTotalPrice] = useState('')
+  const [startAddr, setStartAddr] = useState(emptyAddress())
+  const [endAddr, setEndAddr] = useState(emptyAddress())
+  const [createError, setCreateError] = useState(null)
+
+  const [openRoute, setOpenRoute] = useState(null)
+  const [routeNameDraft, setRouteNameDraft] = useState('')
+  const [totalPriceDraft, setTotalPriceDraft] = useState('')
+  const [stops, setStops] = useState([])
+  const [newStop, setNewStop] = useState(emptyAddress())
+  const [priceToNext, setPriceToNext] = useState('')
+  const [saveError, setSaveError] = useState(null)
+  const [distanceError, setDistanceError] = useState(null)
+  const [calculatingDistances, setCalculatingDistances] = useState(false)
+
+  const loadOwnRoutes = useCallback(async () => {
+    const { data } = await supabase.rpc('fn_driver_list_own_routes', { p_token: token })
+    setOwnRoutes(data?.routes || [])
+  }, [token])
+
+  useEffect(() => { loadOwnRoutes() }, [loadOwnRoutes])
+
+  async function createRoute(e) {
+    e.preventDefault()
+    setCreateError(null)
+    if (!routeName.trim() || !startAddr.name.trim() || !endAddr.name.trim()) return
+    const { data, error: err } = await supabase.rpc('fn_driver_create_route', {
+      p_token: token,
+      p_name: routeName.trim(),
+      p_total_price: Math.max(0, Math.round(Number(totalPrice) || 0)),
+      p_start: startAddr,
+      p_end: endAddr,
+    })
+    if (err || data?.error) { setCreateError('Strecke konnte nicht angelegt werden.'); return }
+    setRouteName(''); setTotalPrice(''); setStartAddr(emptyAddress()); setEndAddr(emptyAddress())
+    loadOwnRoutes()
+    onRoutesChanged?.()
+  }
+
+  async function deleteRoute(id) {
+    if (!confirm('Strecke inkl. aller Zwischenstopps löschen?')) return
+    await supabase.rpc('fn_driver_delete_route', { p_token: token, p_route_id: id })
+    if (openRoute?.id === id) setOpenRoute(null)
+    loadOwnRoutes()
+    onRoutesChanged?.()
+  }
+
+  async function openRouteDetail(route) {
+    setSaveError(null)
+    const { data, error: err } = await supabase.rpc('fn_driver_get_route_detail', { p_token: token, p_route_id: route.id })
+    if (err || data?.error) { setSaveError('Strecke konnte nicht geladen werden.'); return }
+    setOpenRoute(data.route)
+    setRouteNameDraft(data.route.name)
+    setTotalPriceDraft(String(data.route.total_price ?? 0))
+    setStops(data.stops)
+  }
+
+  async function saveRouteMeta() {
+    setSaveError(null)
+    const { error: err } = await supabase.rpc('fn_driver_update_route_meta', {
+      p_token: token,
+      p_route_id: openRoute.id,
+      p_name: routeNameDraft.trim(),
+      p_total_price: Math.max(0, Math.round(Number(totalPriceDraft) || 0)),
+    })
+    if (err) { setSaveError('Konnte nicht gespeichert werden.'); return }
+    setOpenRoute({ ...openRoute, name: routeNameDraft.trim(), total_price: Math.max(0, Math.round(Number(totalPriceDraft) || 0)) })
+    loadOwnRoutes()
+  }
+
+  async function updateStopField(stop, field, value) {
+    setSaveError(null)
+    const merged = { ...stop, [field]: value }
+    const { error: err } = await supabase.rpc('fn_driver_update_stop', {
+      p_token: token,
+      p_stop_id: stop.id,
+      p_name: merged.name,
+      p_postal_code: merged.postal_code,
+      p_street: merged.street,
+      p_house_number: merged.house_number,
+      p_country: merged.country,
+      p_maps_link: merged.maps_link,
+    })
+    if (err) { setSaveError('Feld konnte nicht gespeichert werden.'); return }
+    openRouteDetail(openRoute)
+  }
+
+  async function updatePrice(stop, value) {
+    const v = Math.max(0, Math.round(Number(value) || 0))
+    setSaveError(null)
+    const { error: err } = await supabase.rpc('fn_driver_update_stop_price', { p_token: token, p_stop_id: stop.id, p_price_to_next: v })
+    if (err) { setSaveError('Preis konnte nicht gespeichert werden.'); return }
+    openRouteDetail(openRoute)
+  }
+
+  async function addStop(e) {
+    e.preventDefault()
+    if (!newStop.name.trim()) return
+    if (stops.length < 2) { setSaveError('Bitte zuerst Start- und Zielpunkt anlegen.'); return }
+    setSaveError(null)
+    const { error: err } = await supabase.rpc('fn_driver_add_stop', {
+      p_token: token,
+      p_route_id: openRoute.id,
+      p_name: newStop.name.trim(),
+      p_postal_code: newStop.postal_code,
+      p_street: newStop.street,
+      p_house_number: newStop.house_number,
+      p_country: newStop.country,
+      p_maps_link: newStop.maps_link,
+      p_price_to_prev: Math.max(0, Math.round(Number(priceToNext) || 0)),
+    })
+    if (err) { setSaveError('Zwischenstopp konnte nicht angelegt werden.'); return }
+    setNewStop(emptyAddress())
+    setPriceToNext('')
+    openRouteDetail(openRoute)
+  }
+
+  async function removeStop(stop) {
+    if (!confirm(`„${stop.name}" wirklich entfernen?`)) return
+    await supabase.rpc('fn_driver_remove_stop', { p_token: token, p_stop_id: stop.id })
+    openRouteDetail(openRoute)
+  }
+
+  async function moveStop(index, direction) {
+    if (index < 1 || index > stops.length - 2) return
+    setSaveError(null)
+    const { error: err } = await supabase.rpc('fn_driver_move_stop', {
+      p_token: token, p_route_id: openRoute.id, p_stop_id: stops[index].id, p_direction: direction,
+    })
+    if (err) { setSaveError('Reihenfolge konnte nicht geändert werden.'); return }
+    setSaveError('Reihenfolge geändert — bitte die Mitfahrbeiträge (und ggf. Entfernungen neu berechnen) der betroffenen Abschnitte prüfen.')
+    openRouteDetail(openRoute)
+  }
+
+  async function calculateDistances() {
+    if (stops.length < 2) return
+    setDistanceError(null)
+    setCalculatingDistances(true)
+    try {
+      const coords = []
+      for (const s of stops) {
+        const query = [s.street, s.house_number, s.postal_code, s.name, s.country].filter(Boolean).join(' ')
+        const res = await fetch(`https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${encodeURIComponent(query)}`)
+        if (!res.ok) throw new Error('Geocoding-Dienst nicht erreichbar.')
+        const data = await res.json()
+        if (!data || data.length === 0) throw new Error(`Konnte „${s.name}" nicht auf der Karte finden. Bitte Adresse präzisieren.`)
+        coords.push({ lat: parseFloat(data[0].lat), lon: parseFloat(data[0].lon) })
+        await new Promise((r) => setTimeout(r, 1100))
+      }
+      const coordStr = coords.map((c) => `${c.lon},${c.lat}`).join(';')
+      const osrmRes = await fetch(`https://router.project-osrm.org/route/v1/driving/${coordStr}?overview=false`)
+      if (!osrmRes.ok) throw new Error('Routing-Dienst nicht erreichbar.')
+      const osrmData = await osrmRes.json()
+      if (osrmData.code !== 'Ok' || !osrmData.routes?.[0]) throw new Error('Route konnte nicht berechnet werden.')
+      const legs = osrmData.routes[0].legs
+      for (let i = 0; i < legs.length; i++) {
+        const distanceKm = Math.round((legs[i].distance / 1000) * 10) / 10
+        const durationMin = Math.round(legs[i].duration / 60)
+        await supabase.rpc('fn_driver_update_stop_distance', {
+          p_token: token, p_stop_id: stops[i].id, p_distance_km: distanceKm, p_duration_min: durationMin,
+        })
+      }
+      openRouteDetail(openRoute)
+    } catch (err) {
+      setDistanceError(err.message || 'Entfernungen konnten nicht berechnet werden.')
+    } finally {
+      setCalculatingDistances(false)
+    }
+  }
+
+  if (openRoute) {
+    return (
+      <div style={{ marginTop: 12 }}>
+        <button className="secondary" style={{ marginBottom: 12 }} onClick={() => setOpenRoute(null)}>← Zurück zu meinen Strecken</button>
+
+        <label>Streckenname</label>
+        <input value={routeNameDraft} onChange={(e) => setRouteNameDraft(e.target.value)} onBlur={saveRouteMeta} />
+
+        <label>Gesamtbetrag für die ganze Strecke (EUR)</label>
+        <input type="number" min="0" step="1" value={totalPriceDraft} onChange={(e) => setTotalPriceDraft(e.target.value)} onBlur={saveRouteMeta} />
+
+        {saveError && <div className="notice error" style={{ marginTop: 12 }}>{saveError}</div>}
+        {distanceError && <div className="notice error" style={{ marginTop: 12 }}>{distanceError}</div>}
+
+        <button className="secondary" style={{ width: '100%', margin: '12px 0 4px' }} onClick={calculateDistances} disabled={calculatingDistances || stops.length < 2}>
+          {calculatingDistances ? 'Berechne Entfernungen …' : '📍 Entfernungen & Fahrzeiten berechnen'}
+        </button>
+        <div className="meta" style={{ marginBottom: 12 }}>Kostenlos über OpenStreetMap, basierend auf den hinterlegten Adressen.</div>
+
+        {stops.map((s, i) => {
+          const isIntermediate = i !== 0 && i !== stops.length - 1
+          const role = i === 0 ? 'Start' : i === stops.length - 1 ? 'Ziel' : `Zwischenstopp #${i}`
+          return (
+            <div key={s.id}>
+              <hr style={{ border: 'none', borderTop: '1px solid var(--color-border)', margin: '14px 0' }} />
+              <div className="row" style={{ alignItems: 'center' }}>
+                <span className="badge" style={{ flex: 'none' }}>{role}</span>
+                {isIntermediate && (
+                  <>
+                    <button className="secondary" style={{ padding: '4px 8px', fontSize: 12, flex: 'none', marginLeft: 'auto' }} disabled={i === 1} onClick={() => moveStop(i, -1)}>↑</button>
+                    <button className="secondary" style={{ padding: '4px 8px', fontSize: 12, flex: 'none' }} disabled={i === stops.length - 2} onClick={() => moveStop(i, 1)}>↓</button>
+                    <button className="danger" style={{ padding: '4px 8px', fontSize: 12, flex: 'none' }} onClick={() => removeStop(s)}>✕</button>
+                  </>
+                )}
+              </div>
+
+              {i > 0 && (
+                <div style={{ marginTop: 8 }}>
+                  <label style={{ margin: '0 0 2px' }}>Mitfahrbeitrag bis „{s.name}" (EUR)</label>
+                  <input type="number" min="0" step="1" defaultValue={stops[i - 1].price_to_next} onBlur={(e) => updatePrice(stops[i - 1], e.target.value)} />
+                  {stops[i - 1].distance_to_next_km != null && (
+                    <div className="meta" style={{ marginTop: 4 }}>≈ {stops[i - 1].distance_to_next_km} km · {stops[i - 1].duration_to_next_min} Min</div>
+                  )}
+                </div>
+              )}
+
+              <label style={{ marginTop: 12 }}>Adresse</label>
+              <div className="row">
+                <div style={{ flex: 2 }}>
+                  <label style={{ marginTop: 0 }}>Straße</label>
+                  <input value={s.street || ''} onChange={(e) => setStops(stops.map((x) => (x.id === s.id ? { ...x, street: e.target.value } : x)))} />
+                </div>
+                <div>
+                  <label style={{ marginTop: 0 }}>Hausnr.</label>
+                  <input value={s.house_number || ''} onChange={(e) => setStops(stops.map((x) => (x.id === s.id ? { ...x, house_number: e.target.value } : x)))} />
+                </div>
+              </div>
+              <div className="row">
+                <div>
+                  <label style={{ marginTop: 0 }}>PLZ</label>
+                  <input value={s.postal_code || ''} onChange={(e) => setStops(stops.map((x) => (x.id === s.id ? { ...x, postal_code: e.target.value } : x)))} />
+                </div>
+                <div style={{ flex: 2 }}>
+                  <label style={{ marginTop: 0 }}>Ort</label>
+                  <input value={s.name || ''} onChange={(e) => setStops(stops.map((x) => (x.id === s.id ? { ...x, name: e.target.value } : x)))} required />
+                </div>
+              </div>
+              <label>Land</label>
+              <input value={s.country || ''} onChange={(e) => setStops(stops.map((x) => (x.id === s.id ? { ...x, country: e.target.value } : x)))} />
+              <label>Google-Maps-Link</label>
+              <div className="row">
+                <input value={s.maps_link || ''} onChange={(e) => setStops(stops.map((x) => (x.id === s.id ? { ...x, maps_link: e.target.value } : x)))} />
+                {s.maps_link && (
+                  <a href={s.maps_link} target="_blank" rel="noreferrer" style={{ flex: 'none' }}>
+                    <button type="button" className="secondary" style={{ height: '100%' }}>📍</button>
+                  </a>
+                )}
+              </div>
+              <button
+                className="secondary"
+                style={{ marginTop: 10 }}
+                onClick={() => {
+                  updateStopField(s, 'name', s.name)
+                  updateStopField(s, 'postal_code', s.postal_code)
+                  updateStopField(s, 'street', s.street)
+                  updateStopField(s, 'house_number', s.house_number)
+                  updateStopField(s, 'country', s.country)
+                  updateStopField(s, 'maps_link', s.maps_link)
+                }}
+              >Zwischenstopp speichern</button>
+            </div>
+          )
+        })}
+
+        <form onSubmit={addStop} style={{ marginTop: 14 }}>
+          <h3>Neuer Zwischenstopp</h3>
+          <div className="meta" style={{ marginBottom: 8 }}>Wird direkt vor dem Zielort „{stops[stops.length - 1]?.name}" eingefügt.</div>
+          <AddressFields value={newStop} onChange={setNewStop} prefix="Zwischenstopp:" />
+          <label>Mitfahrbeitrag von „{stops[stops.length - 2]?.name}" bis hier (EUR)</label>
+          <input type="number" min="0" step="1" value={priceToNext} onChange={(e) => setPriceToNext(e.target.value)} placeholder="0" />
+          <button style={{ marginTop: 10, width: '100%' }}>Zwischenstopp hinzufügen</button>
+        </form>
+      </div>
+    )
+  }
+
+  return (
+    <div style={{ marginTop: 12 }}>
+      <h3>Neue Strecke</h3>
+      <form onSubmit={createRoute}>
+        <label>Name der Strecke</label>
+        <input value={routeName} onChange={(e) => setRouteName(e.target.value)} placeholder="z.B. München - Basel" required />
+        <label>Gesamtbetrag für die ganze Strecke (EUR)</label>
+        <input type="number" min="0" step="1" value={totalPrice} onChange={(e) => setTotalPrice(e.target.value)} placeholder="0" />
+        <h3 style={{ marginTop: 16 }}>Startpunkt</h3>
+        <AddressFields value={startAddr} onChange={setStartAddr} />
+        <h3 style={{ marginTop: 16 }}>Zielpunkt</h3>
+        <AddressFields value={endAddr} onChange={setEndAddr} />
+        {createError && <div className="notice error" style={{ marginTop: 12 }}>{createError}</div>}
+        <button style={{ marginTop: 14, width: '100%' }}>Strecke anlegen</button>
+      </form>
+
+      <h3 style={{ marginTop: 20 }}>Meine Strecken</h3>
+      {ownRoutes.length === 0 && <div className="empty-state">Noch keine eigenen Strecken angelegt.</div>}
+      {ownRoutes.map((r) => (
+        <div className="card" key={r.id}>
+          <h3>{r.name}</h3>
+          <div className="meta">Gesamtbetrag: EUR {r.total_price ?? 0}</div>
+          <div className="row" style={{ marginTop: 8 }}>
+            <button onClick={() => openRouteDetail(r)}>Streckenpunkte & Beiträge</button>
+            <button className="danger" onClick={() => deleteRoute(r.id)}>Löschen</button>
+          </div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
 export default function DriverPage() {
   const { token: tokenFromUrl } = useParams()
   const token = tokenFromUrl || localStorage.getItem(TOKEN_STORAGE_KEY)
@@ -37,6 +484,8 @@ export default function DriverPage() {
   const [tripBookings, setTripBookings] = useState([])
 
   const [showSettings, setShowSettings] = useState(false)
+  const [showRoutes, setShowRoutes] = useState(false)
+  const [showCars, setShowCars] = useState(false)
   const [paymentInfo, setPaymentInfo] = useState('')
   const [referenceCurrency, setReferenceCurrency] = useState('')
   const [ratePer100km, setRatePer100km] = useState('')
@@ -239,6 +688,20 @@ export default function DriverPage() {
         </div>
 
         <div className="card">
+          <button className="secondary" style={{ width: '100%' }} onClick={() => setShowRoutes(!showRoutes)}>
+            {showRoutes ? 'Strecken schließen' : '🗺️ Meine Strecken (anlegen & bearbeiten)'}
+          </button>
+          {showRoutes && <DriverRoutesManager token={token} onRoutesChanged={loadAll} />}
+        </div>
+
+        <div className="card">
+          <button className="secondary" style={{ width: '100%' }} onClick={() => setShowCars(!showCars)}>
+            {showCars ? 'Autos schließen' : '🚗 Meine Autos (anlegen & bearbeiten)'}
+          </button>
+          {showCars && <DriverCarsManager token={token} onCarsChanged={loadAll} />}
+        </div>
+
+        <div className="card">
           <h3>Fahrt veröffentlichen</h3>
           {(cars.length === 0 || routes.length === 0) && (
             <div className="notice error">Es sind noch keine Strecken oder Autos hinterlegt. Bitte den Admin fragen.</div>
@@ -257,7 +720,7 @@ export default function DriverPage() {
             <div className="row">
               <div>
                 <label>Datum</label>
-                <input type="date" value={date} onChange={(e) => setDate(e.target.value)} required />
+                <input type="date" value={date} min={`${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, "0")}-${String(new Date().getDate()).padStart(2, "0")}`} onChange={(e) => setDate(e.target.value)} required />
               </div>
               <div>
                 <label>Startzeit</label>

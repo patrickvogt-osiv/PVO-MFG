@@ -968,7 +968,7 @@ function TripsTab() {
           <div className="row">
             <div>
               <label>Datum</label>
-              <input type="date" value={date} onChange={(e) => setDate(e.target.value)} required />
+              <input type="date" value={date} min={`${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, "0")}-${String(new Date().getDate()).padStart(2, "0")}`} onChange={(e) => setDate(e.target.value)} required />
             </div>
             <div>
               <label>Startzeit</label>

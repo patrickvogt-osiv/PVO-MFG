@@ -13,6 +13,11 @@ function formatTime(timeStr) {
   return timeStr?.slice(0, 5)
 }
 
+function todayIso() {
+  const d = new Date()
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
 function formatAddress(s) {
   if (!s) return ''
   const line1 = [s.postal_code, s.name].filter(Boolean).join(' ')
@@ -162,6 +167,11 @@ export default function InvitePage() {
   }
 
   function tripMatchesSearch(trip) {
+    // Grundsätzlich nie Fahrten vor heute anzeigen (Server filtert bereits
+    // serverseitig, das hier ist eine zusätzliche clientseitige Absicherung,
+    // v.a. relevant bei der Flexibilitäts-Suche mit "früher"-Option).
+    if (trip.trip_date < todayIso()) return false
+
     const stops = trip.stops || []
     const fromCandidates = stops.filter((s) => {
       const nameOk = !activeSearch.city || s.name?.toLowerCase().includes(activeSearch.city.toLowerCase())
@@ -636,6 +646,7 @@ export default function InvitePage() {
               <input
                 type="date"
                 value={dateInput}
+                min={todayIso()}
                 onChange={(e) => setDateInput(e.target.value)}
               />
               <label>Flexibilität</label>
@@ -672,14 +683,11 @@ export default function InvitePage() {
             {visibleTrips.map((t) => {
               const seg = matchedSegmentFor(t)
               const avail = seg ? availableSeatsInRange(t, seg.from.order_index, seg.to.order_index) : t.available_seats
-              let label
-              if (t.closed && avail > 0) {
-                label = 'Fahrt geschlossen'
-              } else if (seg) {
-                label = avail > 0 ? `${avail} Platz/Plätze frei für ${seg.from.name} → ${seg.to.name}` : `Ausgebucht für ${seg.from.name} → ${seg.to.name}`
-              } else {
-                label = avail > 0 ? `${avail} von ${t.total_seats} Plätzen frei` : 'Ausgebucht'
-              }
+              const soldOut = avail <= 0
+              const closedWithSeats = t.closed && !soldOut
+              const label = seg
+                ? (soldOut ? `Ausgebucht für ${seg.from.name} → ${seg.to.name}` : `${avail} Platz/Plätze frei für ${seg.from.name} → ${seg.to.name}`)
+                : (soldOut ? 'Ausgebucht' : `${avail} von ${t.total_seats} Plätzen frei`)
               const dateHint = dateOffsetHint(t)
               return (
                 <div className="card" key={t.id}>
@@ -687,14 +695,15 @@ export default function InvitePage() {
                   <div className="meta">{formatDate(t.trip_date)} · {formatTime(t.start_time)} Uhr</div>
                   {t.car_name && <div className="meta">🚗 {t.car_name}{t.car_notes ? ` (${t.car_notes})` : ''}</div>}
                   {dateHint && <div className="notice" style={{ background: '#fff4e0', color: '#8a5a00', marginTop: 8 }}>{dateHint}</div>}
-                  <div style={{ margin: '8px 0' }}>
-                    <span className={`badge ${avail <= 0 || t.closed ? 'full' : ''}`}>{label}</span>
-                  </div>
-                  {t.closed && avail > 0 && (
-                    <div className="meta" style={{ marginBottom: 8 }}>
-                      Die Restplätze können auf alternativen professionellen Plattformen gebucht werden.
+                  {closedWithSeats && (
+                    <div className="notice error" style={{ marginTop: 8 }}>
+                      Die Rest-Plätze dieser Fahrt sind auf dieser Plattform nicht mehr buchbar. Diese können
+                      evtl. auf alternativen professionellen Plattformen gebucht werden.
                     </div>
                   )}
+                  <div style={{ margin: '8px 0' }}>
+                    <span className={`badge ${soldOut || closedWithSeats ? 'full' : ''}`}>{label}</span>
+                  </div>
                   <button style={{ width: '100%' }} onClick={() => openTrip(t)}>
                     {t.closed ? 'Details ansehen' : 'Buchen'}
                   </button>
@@ -755,7 +764,6 @@ export default function InvitePage() {
                   const arrival = etaAt(seg.to.order_index)
                   let badgeText
                   if (soldOut) badgeText = 'Ausgebucht'
-                  else if (tripDetails.closed) badgeText = 'Fahrt geschlossen'
                   else badgeText = `${avail} Platz/Plätze frei`
                   return (
                     <div
@@ -780,8 +788,9 @@ export default function InvitePage() {
                         </div>
                       )}
                       {tripDetails.closed && !soldOut && (
-                        <div className="meta" style={{ marginTop: 4 }}>
-                          Die Restplätze können auf alternativen professionellen Plattformen gebucht werden.
+                        <div className="notice error" style={{ marginTop: 8 }}>
+                          Die Rest-Plätze dieser Fahrt sind auf dieser Plattform nicht mehr buchbar. Diese können
+                          evtl. auf alternativen professionellen Plattformen gebucht werden.
                         </div>
                       )}
                       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 8 }}>
