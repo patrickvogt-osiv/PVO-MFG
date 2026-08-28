@@ -165,10 +165,21 @@ function DriversTab() {
   const [drivers, setDrivers] = useState([])
   const [name, setName] = useState('')
   const [copiedId, setCopiedId] = useState(null)
+  const [drafts, setDrafts] = useState({}) // { [driverId]: { payment_info, reference_currency, rate_eur_per_100km } }
+  const [savedId, setSavedId] = useState(null)
 
   const load = useCallback(async () => {
     const { data } = await supabase.from('drivers').select('*').order('created_at', { ascending: false })
     setDrivers(data || [])
+    const nextDrafts = {}
+    for (const d of data || []) {
+      nextDrafts[d.id] = {
+        payment_info: d.payment_info || '',
+        reference_currency: d.reference_currency || '',
+        rate_eur_per_100km: d.rate_eur_per_100km ?? '',
+      }
+    }
+    setDrafts(nextDrafts)
   }, [])
 
   useEffect(() => { load() }, [load])
@@ -197,8 +208,20 @@ function DriversTab() {
     setTimeout(() => setCopiedId(null), 1500)
   }
 
-  async function updateDriverField(d, field, value) {
-    await supabase.from('drivers').update({ [field]: value === '' ? null : value }).eq('id', d.id)
+  function updateDraft(driverId, field, value) {
+    setDrafts((prev) => ({ ...prev, [driverId]: { ...prev[driverId], [field]: value } }))
+  }
+
+  async function saveDriverProfile(d) {
+    const draft = drafts[d.id] || {}
+    const { error } = await supabase.from('drivers').update({
+      payment_info: draft.payment_info?.trim() || null,
+      reference_currency: draft.reference_currency?.trim().toUpperCase() || null,
+      rate_eur_per_100km: draft.rate_eur_per_100km === '' ? null : Number(draft.rate_eur_per_100km),
+    }).eq('id', d.id)
+    if (error) { alert('Fehler beim Speichern: ' + error.message); return }
+    setSavedId(d.id)
+    setTimeout(() => setSavedId(null), 1500)
     load()
   }
 
@@ -217,53 +240,59 @@ function DriversTab() {
         </form>
       </div>
 
-      {drivers.map((d) => (
-        <div className="card" key={d.id}>
-          <h3>{d.name} {d.revoked && <span className="badge full">widerrufen</span>}</h3>
-          {(d.phone || d.email) && (
-            <div className="meta">{[d.phone, d.email].filter(Boolean).join(' · ')}</div>
-          )}
-          <div className="link-box">
-            <span style={{ flex: 1 }}>{inviteLink(d.invite_token)}</span>
-            <button className="secondary" style={{ padding: '4px 8px' }} onClick={() => copyLink(d)}>
-              {copiedId === d.id ? '✓' : 'Kopieren'}
+      {drivers.map((d) => {
+        const draft = drafts[d.id] || { payment_info: '', reference_currency: '', rate_eur_per_100km: '' }
+        return (
+          <div className="card" key={d.id}>
+            <h3>{d.name} {d.revoked && <span className="badge full">widerrufen</span>}</h3>
+            {(d.phone || d.email) && (
+              <div className="meta">{[d.phone, d.email].filter(Boolean).join(' · ')}</div>
+            )}
+            <div className="link-box">
+              <span style={{ flex: 1 }}>{inviteLink(d.invite_token)}</span>
+              <button className="secondary" style={{ padding: '4px 8px' }} onClick={() => copyLink(d)}>
+                {copiedId === d.id ? '✓' : 'Kopieren'}
+              </button>
+            </div>
+
+            <label style={{ marginTop: 10 }}>Zahlungshinweis/-link (z.B. PayPal.me, Twint, WERO)</label>
+            <input
+              value={draft.payment_info}
+              placeholder="z.B. paypal.me/name oder 'Twint an 079 123 45 67'"
+              onChange={(e) => updateDraft(d.id, 'payment_info', e.target.value)}
+            />
+            <div className="row">
+              <div>
+                <label>Referenzwährung</label>
+                <input
+                  value={draft.reference_currency}
+                  placeholder="z.B. CHF"
+                  onChange={(e) => updateDraft(d.id, 'reference_currency', e.target.value.toUpperCase())}
+                />
+              </div>
+              <div>
+                <label>EUR/100km-Rate</label>
+                <input
+                  type="number" min="0" step="0.1"
+                  value={draft.rate_eur_per_100km}
+                  onChange={(e) => updateDraft(d.id, 'rate_eur_per_100km', e.target.value)}
+                />
+              </div>
+            </div>
+            <button className="secondary" style={{ marginTop: 10, width: '100%' }} onClick={() => saveDriverProfile(d)}>
+              {savedId === d.id ? '✓ Gespeichert' : 'Speichern'}
+            </button>
+
+            <button
+              className={d.revoked ? 'secondary' : 'danger'}
+              style={{ marginTop: 10 }}
+              onClick={() => toggleRevoke(d)}
+            >
+              {d.revoked ? 'Zugang wiederherstellen' : 'Zugang widerrufen'}
             </button>
           </div>
-
-          <label style={{ marginTop: 10 }}>Zahlungshinweis/-link (z.B. PayPal.me, Twint, WERO)</label>
-          <input
-            defaultValue={d.payment_info || ''}
-            placeholder="z.B. paypal.me/name oder 'Twint an 079 123 45 67'"
-            onBlur={(e) => updateDriverField(d, 'payment_info', e.target.value)}
-          />
-          <div className="row">
-            <div>
-              <label>Referenzwährung</label>
-              <input
-                defaultValue={d.reference_currency || ''}
-                placeholder="z.B. CHF"
-                onBlur={(e) => updateDriverField(d, 'reference_currency', e.target.value.toUpperCase())}
-              />
-            </div>
-            <div>
-              <label>EUR/100km-Rate</label>
-              <input
-                type="number" min="0" step="0.1"
-                defaultValue={d.rate_eur_per_100km ?? ''}
-                onBlur={(e) => updateDriverField(d, 'rate_eur_per_100km', e.target.value === '' ? null : Number(e.target.value))}
-              />
-            </div>
-          </div>
-
-          <button
-            className={d.revoked ? 'secondary' : 'danger'}
-            style={{ marginTop: 10 }}
-            onClick={() => toggleRevoke(d)}
-          >
-            {d.revoked ? 'Zugang wiederherstellen' : 'Zugang widerrufen'}
-          </button>
-        </div>
-      ))}
+        )
+      })}
     </>
   )
 }
@@ -543,14 +572,19 @@ function RoutesTab() {
             <strong>{stops[0].name} – {stops[stops.length - 1].name}</strong>
             <span className="meta"> (gesamte Strecke)</span>
             <div><span className="badge">EUR {openRoute.total_price ?? 0}</span></div>
-            {stops.every((s, i) => i === stops.length - 1 || s.distance_to_next_km != null) && (
-              <div style={{ marginTop: 6 }}>
-                <span className="meta">
-                  ≈ {Math.round(stops.reduce((sum, s) => sum + (s.distance_to_next_km || 0), 0) * 10) / 10} km ·{' '}
-                  {stops.reduce((sum, s) => sum + (s.duration_to_next_min || 0), 0)} Min Fahrzeit
-                </span>
-              </div>
-            )}
+            {stops.every((s, i) => i === stops.length - 1 || s.distance_to_next_km != null) && (() => {
+              const totalDistance = Math.round(stops.reduce((sum, s) => sum + (s.distance_to_next_km || 0), 0) * 10) / 10
+              const totalDuration = stops.reduce((sum, s) => sum + (s.duration_to_next_min || 0), 0)
+              const per100 = totalDistance > 0 ? Math.round((openRoute.total_price / totalDistance) * 100 * 100) / 100 : null
+              return (
+                <div style={{ marginTop: 6 }}>
+                  <span className="meta">
+                    ≈ {totalDistance} km · {totalDuration} Min Fahrzeit
+                    {per100 != null && ` · ≈ ${per100} EUR/100km${convertedHint(per100)}`}
+                  </span>
+                </div>
+              )
+            })()}
           </div>
         )}
 
