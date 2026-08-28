@@ -1,0 +1,19 @@
+[build]
+  command = "npm run build"
+  publish = "dist"
+
+# VITE_SUPABASE_URL und VITE_SUPABASE_ANON_KEY sind bewusst öffentliche,
+# client-seitige Werte (Supabase sichert den Zugriff über Row Level Security
+# in der Datenbank ab, nicht über Geheimhaltung des anon-Keys). Sie müssen im
+# Frontend-Bundle landen, damit die App mit Supabase sprechen kann — deshalb
+# hier explizit von Netlifys Secret-Scanner ausgenommen.
+[build.environment]
+  SECRETS_SCAN_OMIT_KEYS = "VITE_SUPABASE_URL,VITE_SUPABASE_ANON_KEY"
+
+# Client-seitiges Routing (React Router): alle Pfade auf index.html umleiten,
+# damit z.B. /invite/TOKEN oder /admin auch bei direktem Aufruf/Reload
+# funktionieren statt eines 404.
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
