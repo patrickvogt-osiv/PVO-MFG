@@ -188,6 +188,20 @@ export default function InvitePage() {
 
   const visibleTrips = hasSearched ? trips.filter(tripMatchesSearch) : []
 
+  // Abweichung (in Tagen) zwischen gesuchtem Datum und tatsächlichem
+  // Fahrtdatum, für den Hinweistext bei flexibler Datumssuche.
+  function dateOffsetHint(trip) {
+    if (!activeSearch.date) return null
+    const target = new Date(activeSearch.date + 'T00:00:00')
+    const tripD = new Date(trip.trip_date + 'T00:00:00')
+    const diffDays = Math.round((tripD - target) / 86400000)
+    if (diffDays === 0) return null
+    const n = Math.abs(diffDays)
+    const dayWord = n === 1 ? 'Tag' : 'Tage'
+    const direction = diffDays > 0 ? 'später' : 'früher'
+    return `Diese Fahrt findet ${n} ${dayWord} ${direction} statt als gesucht.`
+  }
+
   // Ermittelt die konkrete Verbindung (Ein-/Ausstieg), die zur aktuellen Orts-
   // Suche passt, damit die Verfügbarkeit dafür (statt für die ganze Strecke)
   // angezeigt werden kann.
@@ -391,7 +405,7 @@ export default function InvitePage() {
       setBookingMsg({ type: 'error', text: map[data?.error] || 'Buchung fehlgeschlagen.' })
       return
     }
-    setBookingMsg({ type: 'success', text: `Platz erfolgreich gebucht! Mitfahrbeitrag: CHF ${data.price}` })
+    setBookingMsg({ type: 'success', text: `Platz erfolgreich gebucht! Mitfahrbeitrag: EUR ${data.price}` })
     setFromStop('')
     setToStop('')
     reloadTripDetails(selectedTrip)
@@ -658,18 +672,32 @@ export default function InvitePage() {
             {visibleTrips.map((t) => {
               const seg = matchedSegmentFor(t)
               const avail = seg ? availableSeatsInRange(t, seg.from.order_index, seg.to.order_index) : t.available_seats
-              const label = seg
-                ? (avail > 0 ? `${avail} Platz/Plätze frei für ${seg.from.name} → ${seg.to.name}` : `Ausgebucht für ${seg.from.name} → ${seg.to.name}`)
-                : (avail > 0 ? `${avail} von ${t.total_seats} Plätzen frei` : 'Ausgebucht')
+              let label
+              if (t.closed && avail > 0) {
+                label = 'Fahrt geschlossen'
+              } else if (seg) {
+                label = avail > 0 ? `${avail} Platz/Plätze frei für ${seg.from.name} → ${seg.to.name}` : `Ausgebucht für ${seg.from.name} → ${seg.to.name}`
+              } else {
+                label = avail > 0 ? `${avail} von ${t.total_seats} Plätzen frei` : 'Ausgebucht'
+              }
+              const dateHint = dateOffsetHint(t)
               return (
                 <div className="card" key={t.id}>
                   <h3>{t.route_name}{t.via_stops && ` (via ${t.via_stops})`}</h3>
                   <div className="meta">{formatDate(t.trip_date)} · {formatTime(t.start_time)} Uhr</div>
                   {t.car_name && <div className="meta">🚗 {t.car_name}{t.car_notes ? ` (${t.car_notes})` : ''}</div>}
+                  {dateHint && <div className="notice" style={{ background: '#fff4e0', color: '#8a5a00', marginTop: 8 }}>{dateHint}</div>}
                   <div style={{ margin: '8px 0' }}>
-                    <span className={`badge ${avail <= 0 ? 'full' : ''}`}>{label}</span>
+                    <span className={`badge ${avail <= 0 || t.closed ? 'full' : ''}`}>{label}</span>
                   </div>
-                  <button style={{ width: '100%' }} onClick={() => openTrip(t)}>Buchen</button>
+                  {t.closed && avail > 0 && (
+                    <div className="meta" style={{ marginBottom: 8 }}>
+                      Die Restplätze können auf alternativen professionellen Plattformen gebucht werden.
+                    </div>
+                  )}
+                  <button style={{ width: '100%' }} onClick={() => openTrip(t)}>
+                    {t.closed ? 'Details ansehen' : 'Buchen'}
+                  </button>
                 </div>
               )
             })}
@@ -684,6 +712,18 @@ export default function InvitePage() {
             <h3>{selectedTrip.route_name}</h3>
             <div className="meta">{formatDate(selectedTrip.trip_date)} · {formatTime(selectedTrip.start_time)} Uhr</div>
             {tripDetails.car_name && <div className="meta">🚗 {tripDetails.car_name}{tripDetails.car_notes ? ` (${tripDetails.car_notes})` : ''}</div>}
+            {tripDetails.driver_payment_info && (
+              <div className="meta">💳 Bezahlung: {
+                /^https?:\/\//i.test(tripDetails.driver_payment_info)
+                  ? <a href={tripDetails.driver_payment_info} target="_blank" rel="noreferrer">{tripDetails.driver_payment_info}</a>
+                  : tripDetails.driver_payment_info
+              }</div>
+            )}
+            {tripDetails.closed && (
+              <div className="notice" style={{ background: '#fff4e0', color: '#8a5a00', marginTop: 8 }}>
+                Diese Fahrt ist geschlossen — noch freie Restplätze können auf alternativen professionellen Plattformen gebucht werden.
+              </div>
+            )}
 
             <details style={{ marginTop: 10 }}>
               <summary style={{ cursor: 'pointer', fontSize: 13, color: 'var(--color-muted)' }}>Streckenverlauf & Adressen anzeigen</summary>
@@ -709,20 +749,25 @@ export default function InvitePage() {
                   const avail = availableSeatsFor(seg.from.order_index, seg.to.order_index)
                   const price = priceFor(seg.from.order_index, seg.to.order_index)
                   const soldOut = avail <= 0
+                  const blocked = soldOut || tripDetails.closed
                   const distDur = distanceDurationFor(seg.from.order_index, seg.to.order_index)
                   const departure = etaAt(seg.from.order_index)
                   const arrival = etaAt(seg.to.order_index)
+                  let badgeText
+                  if (soldOut) badgeText = 'Ausgebucht'
+                  else if (tripDetails.closed) badgeText = 'Fahrt geschlossen'
+                  else badgeText = `${avail} Platz/Plätze frei`
                   return (
                     <div
                       key={`${seg.from.id}-${seg.to.id}`}
                       className="card"
                       style={{
                         marginBottom: 8,
-                        cursor: soldOut ? 'default' : 'pointer',
-                        opacity: soldOut ? 0.55 : 1,
-                        background: soldOut ? '#eceef0' : undefined,
+                        cursor: blocked ? 'default' : 'pointer',
+                        opacity: blocked ? 0.55 : 1,
+                        background: blocked ? '#eceef0' : undefined,
                       }}
-                      onClick={() => { if (!soldOut) { setFromStop(seg.from.id); setToStop(seg.to.id); setSeats(1) } }}
+                      onClick={() => { if (!blocked) { setFromStop(seg.from.id); setToStop(seg.to.id); setSeats(1) } }}
                     >
                       <h3 style={{ fontSize: 15, margin: 0 }}>
                         {seg.from.name} – {seg.to.name}
@@ -734,11 +779,14 @@ export default function InvitePage() {
                           {distDur && ` · ${distDur.distance} km`}
                         </div>
                       )}
+                      {tripDetails.closed && !soldOut && (
+                        <div className="meta" style={{ marginTop: 4 }}>
+                          Die Restplätze können auf alternativen professionellen Plattformen gebucht werden.
+                        </div>
+                      )}
                       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 8 }}>
-                        <span className={`badge ${soldOut ? 'full' : ''}`}>
-                          {soldOut ? 'Ausgebucht' : `${avail} Platz/Plätze frei`}
-                        </span>
-                        <span className="badge">CHF {price}</span>
+                        <span className={`badge ${blocked ? 'full' : ''}`}>{badgeText}</span>
+                        <span className="badge">EUR {price}</span>
                       </div>
                     </div>
                   )
@@ -770,7 +818,7 @@ export default function InvitePage() {
                     <span className={`badge ${avail <= 0 ? 'full' : ''}`}>
                       {avail > 0 ? `${avail} Platz/Plätze frei` : 'Für diesen Abschnitt ausgebucht'}
                     </span>
-                    <span className="badge">Mitfahrbeitrag: CHF {price}</span>
+                    <span className="badge">Mitfahrbeitrag: EUR {price}</span>
                   </div>
 
                   <label>Anzahl Plätze</label>
@@ -806,7 +854,7 @@ export default function InvitePage() {
                       {b.distance_km != null && ` · ${b.distance_km} km`}
                     </div>
                   )}
-                  <div className="meta">Mitfahrbeitrag: CHF {b.price}</div>
+                  <div className="meta">Mitfahrbeitrag: EUR {b.price}</div>
                   <button className="danger" onClick={() => cancelBooking(b.id)}>Stornieren</button>
                 </div>
               )

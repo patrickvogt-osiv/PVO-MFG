@@ -30,13 +30,16 @@ create table people (
 -- Fahrer: eigene Rolle mit eigenem Einladungslink. Sehen und verwalten nur
 -- ihre eigenen Fahrten und Autos.
 create table drivers (
-  id           uuid primary key default gen_random_uuid(),
-  name         text not null,
-  phone        text,
-  email        text,
-  invite_token text not null unique default encode(gen_random_bytes(16), 'hex'),
-  revoked      boolean not null default false,
-  created_at   timestamptz not null default now()
+  id                   uuid primary key default gen_random_uuid(),
+  name                 text not null,
+  phone                text,
+  email                text,
+  payment_info         text,
+  reference_currency   text,
+  rate_eur_per_100km   numeric,
+  invite_token         text not null unique default encode(gen_random_bytes(16), 'hex'),
+  revoked              boolean not null default false,
+  created_at           timestamptz not null default now()
 );
 
 -- Autos, die für Fahrten genutzt werden. Jedes Auto gehört einem Fahrer.
@@ -82,7 +85,7 @@ create table route_stops (
 );
 
 -- Eine veröffentlichte Fahrt: konkretes Datum/Uhrzeit einer Strecke, mit Auto
--- und Fahrer
+-- und Fahrer. closed = vom Fahrer "zugemacht" (keine neuen Buchungen mehr).
 create table trips (
   id          uuid primary key default gen_random_uuid(),
   route_id    uuid not null references routes(id) on delete cascade,
@@ -91,6 +94,7 @@ create table trips (
   trip_date   date not null,
   start_time  time not null,
   total_seats int not null check (total_seats > 0),
+  closed      boolean not null default false,
   created_at  timestamptz not null default now()
 );
 
@@ -174,7 +178,7 @@ begin
 
   select coalesce(json_agg(t), '[]'::json) into v_trips
   from (
-    select tr.id, tr.trip_date, tr.start_time, tr.total_seats,
+    select tr.id, tr.trip_date, tr.start_time, tr.total_seats, tr.closed,
            r.id as route_id, r.name as route_name,
            c.name as car_name, c.notes as car_notes,
            (
@@ -244,25 +248,28 @@ security definer
 set search_path = public
 as $$
 declare
-  v_person       people%rowtype;
-  v_route_id     uuid;
-  v_total        int;
-  v_car_name     text;
-  v_car_notes    text;
-  v_max_order    int;
-  v_route_price  int;
-  v_stops        json;
-  v_usage        json;
+  v_person          people%rowtype;
+  v_route_id        uuid;
+  v_total           int;
+  v_car_name        text;
+  v_car_notes       text;
+  v_closed          boolean;
+  v_driver_payment  text;
+  v_max_order       int;
+  v_route_price     int;
+  v_stops           json;
+  v_usage           json;
 begin
   select * into v_person from people where invite_token = p_token and not revoked;
   if not found then
     return json_build_object('error', 'invalid_token');
   end if;
 
-  select tr.route_id, tr.total_seats, c.name, c.notes
-    into v_route_id, v_total, v_car_name, v_car_notes
+  select tr.route_id, tr.total_seats, c.name, c.notes, tr.closed, d.payment_info
+    into v_route_id, v_total, v_car_name, v_car_notes, v_closed, v_driver_payment
   from trips tr
   left join cars c on c.id = tr.car_id
+  left join drivers d on d.id = tr.driver_id
   where tr.id = p_trip_id;
 
   if not found then
@@ -308,6 +315,8 @@ begin
     'total_seats', v_total,
     'car_name', v_car_name,
     'car_notes', v_car_notes,
+    'closed', v_closed,
+    'driver_payment_info', v_driver_payment,
     'stops', v_stops,
     'segment_usage', v_usage,
     'route_total_price', v_route_price,
@@ -335,6 +344,7 @@ declare
   v_person      people%rowtype;
   v_route_id    uuid;
   v_total       int;
+  v_closed      boolean;
   v_from_order  int;
   v_to_order    int;
   v_min_order   int;
@@ -353,9 +363,13 @@ begin
     return json_build_object('error', 'invalid_seats');
   end if;
 
-  select route_id, total_seats into v_route_id, v_total from trips where id = p_trip_id;
+  select route_id, total_seats, closed into v_route_id, v_total, v_closed from trips where id = p_trip_id;
   if not found then
     return json_build_object('error', 'trip_not_found');
+  end if;
+
+  if v_closed then
+    return json_build_object('error', 'trip_closed');
   end if;
 
   select order_index into v_from_order from route_stops
@@ -585,7 +599,7 @@ begin
 
   select coalesce(json_agg(t order by t.trip_date, t.start_time), '[]'::json) into v_trips
   from (
-    select tr.id, tr.trip_date, tr.start_time, tr.total_seats,
+    select tr.id, tr.trip_date, tr.start_time, tr.total_seats, tr.closed,
            r.name as route_name, c.name as car_name, c.notes as car_notes,
            coalesce((select sum(b.seats) from bookings b where b.trip_id = tr.id and not b.cancelled), 0) as seats_booked
     from trips tr
@@ -595,7 +609,12 @@ begin
   ) t;
 
   return json_build_object(
-    'driver', json_build_object('id', v_driver.id, 'name', v_driver.name),
+    'driver', json_build_object(
+      'id', v_driver.id, 'name', v_driver.name,
+      'payment_info', v_driver.payment_info,
+      'reference_currency', v_driver.reference_currency,
+      'rate_eur_per_100km', v_driver.rate_eur_per_100km
+    ),
     'trips', v_trips
   );
 end;
@@ -761,3 +780,66 @@ end;
 $$;
 
 grant execute on function fn_signup_request(text, text, text, text, text) to anon;
+
+-- ----------------------------------------------------------------------------
+-- Fahrer-Selbstverwaltung: eigenes Profil (Zahlungsinfo, Referenzwährung,
+-- Rate) aktualisieren
+-- ----------------------------------------------------------------------------
+create or replace function fn_driver_update_profile(
+  p_token              text,
+  p_payment_info       text,
+  p_reference_currency text,
+  p_rate_eur_per_100km numeric
+)
+returns json
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_driver drivers%rowtype;
+begin
+  select * into v_driver from drivers where invite_token = p_token and not revoked;
+  if not found then
+    return json_build_object('error', 'invalid_token');
+  end if;
+
+  update drivers
+  set payment_info       = nullif(trim(p_payment_info), ''),
+      reference_currency = nullif(upper(trim(p_reference_currency)), ''),
+      rate_eur_per_100km = p_rate_eur_per_100km
+  where id = v_driver.id;
+
+  return json_build_object('success', true);
+end;
+$$;
+
+grant execute on function fn_driver_update_profile(text, text, text, numeric) to anon;
+
+-- Fahrt schließen/öffnen (Fahrer)
+create or replace function fn_driver_set_trip_closed(p_token text, p_trip_id uuid, p_closed boolean)
+returns json
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_driver drivers%rowtype;
+  v_owner  uuid;
+begin
+  select * into v_driver from drivers where invite_token = p_token and not revoked;
+  if not found then
+    return json_build_object('error', 'invalid_token');
+  end if;
+
+  select driver_id into v_owner from trips where id = p_trip_id;
+  if v_owner is null or v_owner <> v_driver.id then
+    return json_build_object('error', 'not_your_trip');
+  end if;
+
+  update trips set closed = p_closed where id = p_trip_id;
+  return json_build_object('success', true);
+end;
+$$;
+
+grant execute on function fn_driver_set_trip_closed(text, uuid, boolean) to anon;

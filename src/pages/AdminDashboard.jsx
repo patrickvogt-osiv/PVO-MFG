@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback } from 'react'
 import { supabase } from '../lib/supabaseClient'
+import { getEuroExchangeRate, formatConverted } from '../lib/currency'
 
 const APP_BASE_URL = window.location.origin
 
@@ -148,7 +149,14 @@ function AddressFields({ value, onChange, prefix }) {
       <label>Land</label>
       <input value={value.country} onChange={(e) => onChange({ ...value, country: e.target.value })} placeholder="z.B. Deutschland" />
       <label>Google-Maps-Link</label>
-      <input value={value.maps_link} onChange={(e) => onChange({ ...value, maps_link: e.target.value })} placeholder="https://maps.app.goo.gl/..." />
+      <div className="row">
+        <input value={value.maps_link} onChange={(e) => onChange({ ...value, maps_link: e.target.value })} placeholder="https://maps.app.goo.gl/..." />
+        {value.maps_link && (
+          <a href={value.maps_link} target="_blank" rel="noreferrer" style={{ flex: 'none' }}>
+            <button type="button" className="secondary" style={{ height: '100%' }}>📍</button>
+          </a>
+        )}
+      </div>
     </>
   )
 }
@@ -189,6 +197,11 @@ function DriversTab() {
     setTimeout(() => setCopiedId(null), 1500)
   }
 
+  async function updateDriverField(d, field, value) {
+    await supabase.from('drivers').update({ [field]: value === '' ? null : value }).eq('id', d.id)
+    load()
+  }
+
   return (
     <>
       <div className="card">
@@ -216,6 +229,32 @@ function DriversTab() {
               {copiedId === d.id ? '✓' : 'Kopieren'}
             </button>
           </div>
+
+          <label style={{ marginTop: 10 }}>Zahlungshinweis/-link (z.B. PayPal.me, Twint, WERO)</label>
+          <input
+            defaultValue={d.payment_info || ''}
+            placeholder="z.B. paypal.me/name oder 'Twint an 079 123 45 67'"
+            onBlur={(e) => updateDriverField(d, 'payment_info', e.target.value)}
+          />
+          <div className="row">
+            <div>
+              <label>Referenzwährung</label>
+              <input
+                defaultValue={d.reference_currency || ''}
+                placeholder="z.B. CHF"
+                onBlur={(e) => updateDriverField(d, 'reference_currency', e.target.value.toUpperCase())}
+              />
+            </div>
+            <div>
+              <label>EUR/100km-Rate</label>
+              <input
+                type="number" min="0" step="0.1"
+                defaultValue={d.rate_eur_per_100km ?? ''}
+                onBlur={(e) => updateDriverField(d, 'rate_eur_per_100km', e.target.value === '' ? null : Number(e.target.value))}
+              />
+            </div>
+          </div>
+
           <button
             className={d.revoked ? 'secondary' : 'danger'}
             style={{ marginTop: 10 }}
@@ -246,6 +285,32 @@ function RoutesTab() {
   const [saveError, setSaveError] = useState(null)
   const [distanceError, setDistanceError] = useState(null)
   const [calculatingDistances, setCalculatingDistances] = useState(false)
+
+  const [comparisonDrivers, setComparisonDrivers] = useState([])
+  const [comparisonDriverId, setComparisonDriverId] = useState('')
+  const [comparisonRate, setComparisonRate] = useState(null)
+
+  const comparisonDriver = comparisonDrivers.find((d) => d.id === comparisonDriverId)
+  const comparisonCurrency = comparisonDriver?.reference_currency
+
+  useEffect(() => {
+    supabase.from('drivers').select('id, name, reference_currency').order('name').then(({ data }) => {
+      setComparisonDrivers((data || []).filter((d) => d.reference_currency))
+    })
+  }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    if (!comparisonCurrency) { setComparisonRate(null); return }
+    getEuroExchangeRate(comparisonCurrency).then((rate) => { if (!cancelled) setComparisonRate(rate) })
+    return () => { cancelled = true }
+  }, [comparisonCurrency])
+
+  function convertedHint(amountEur) {
+    if (!comparisonCurrency || comparisonRate == null || amountEur == null) return ''
+    const text = formatConverted(amountEur, comparisonRate, comparisonCurrency)
+    return text ? ` (${text})` : ''
+  }
 
   const loadRoutes = useCallback(async () => {
     const { data } = await supabase.from('routes').select('*').order('created_at', { ascending: false })
@@ -454,8 +519,21 @@ function RoutesTab() {
         <label>Streckenname</label>
         <input value={routeNameDraft} onChange={(e) => setRouteNameDraft(e.target.value)} onBlur={saveRouteMeta} />
 
-        <label>Gesamtbetrag für die ganze Strecke (CHF) — individuell, unabhängig von den Teilstrecken</label>
+        {comparisonDrivers.length > 0 && (
+          <>
+            <label>Vergleichswährung (Fahrer)</label>
+            <select value={comparisonDriverId} onChange={(e) => setComparisonDriverId(e.target.value)}>
+              <option value="">Keine</option>
+              {comparisonDrivers.map((d) => (
+                <option key={d.id} value={d.id}>{d.name} ({d.reference_currency})</option>
+              ))}
+            </select>
+          </>
+        )}
+
+        <label>Gesamtbetrag für die ganze Strecke (EUR) — individuell, unabhängig von den Teilstrecken</label>
         <input type="number" min="0" step="1" value={totalPriceDraft} onChange={(e) => setTotalPriceDraft(e.target.value)} onBlur={saveRouteMeta} />
+        {comparisonCurrency && <div className="meta">≈{convertedHint(Number(totalPriceDraft) || 0)}</div>}
 
         {saveError && <div className="notice error" style={{ marginTop: 12 }}>{saveError}</div>}
         {distanceError && <div className="notice error" style={{ marginTop: 12 }}>{distanceError}</div>}
@@ -464,7 +542,7 @@ function RoutesTab() {
           <div style={{ margin: '16px 0', padding: '10px 12px', background: '#f0f2f4', borderRadius: 10 }}>
             <strong>{stops[0].name} – {stops[stops.length - 1].name}</strong>
             <span className="meta"> (gesamte Strecke)</span>
-            <div><span className="badge">CHF {openRoute.total_price ?? 0}</span></div>
+            <div><span className="badge">EUR {openRoute.total_price ?? 0}</span></div>
             {stops.every((s, i) => i === stops.length - 1 || s.distance_to_next_km != null) && (
               <div style={{ marginTop: 6 }}>
                 <span className="meta">
@@ -521,7 +599,7 @@ function RoutesTab() {
 
               {i > 0 && (
                 <div style={{ marginTop: 8 }}>
-                  <label style={{ margin: '0 0 2px' }}>Mitfahrbeitrag bis „{s.name}" (CHF)</label>
+                  <label style={{ margin: '0 0 2px' }}>Mitfahrbeitrag bis „{s.name}" (EUR)</label>
                   <input
                     type="number"
                     min="0"
@@ -529,9 +607,14 @@ function RoutesTab() {
                     defaultValue={stops[i - 1].price_to_next}
                     onBlur={(e) => updatePrice(stops[i - 1], e.target.value)}
                   />
+                  {comparisonCurrency && <div className="meta">≈{convertedHint(stops[i - 1].price_to_next)}</div>}
                   {stops[i - 1].distance_to_next_km != null && (
                     <div className="meta" style={{ marginTop: 4 }}>
                       ≈ {stops[i - 1].distance_to_next_km} km · {stops[i - 1].duration_to_next_min} Min
+                      {stops[i - 1].distance_to_next_km > 0 && (() => {
+                        const per100 = Math.round((stops[i - 1].price_to_next / stops[i - 1].distance_to_next_km) * 100 * 100) / 100
+                        return ` · ≈ ${per100} EUR/100km${convertedHint(per100)}`
+                      })()}
                     </div>
                   )}
                 </div>
@@ -581,11 +664,18 @@ function RoutesTab() {
                 onChange={(e) => setStops(stops.map((x) => (x.id === s.id ? { ...x, country: e.target.value } : x)))}
               />
               <label>Google-Maps-Link</label>
-              <input
-                value={s.maps_link || ''}
-                placeholder="https://maps.app.goo.gl/..."
-                onChange={(e) => setStops(stops.map((x) => (x.id === s.id ? { ...x, maps_link: e.target.value } : x)))}
-              />
+              <div className="row">
+                <input
+                  value={s.maps_link || ''}
+                  placeholder="https://maps.app.goo.gl/..."
+                  onChange={(e) => setStops(stops.map((x) => (x.id === s.id ? { ...x, maps_link: e.target.value } : x)))}
+                />
+                {s.maps_link && (
+                  <a href={s.maps_link} target="_blank" rel="noreferrer" style={{ flex: 'none' }}>
+                    <button type="button" className="secondary" style={{ height: '100%' }}>📍</button>
+                  </a>
+                )}
+              </div>
 
               <button
                 className="secondary"
@@ -607,7 +697,7 @@ function RoutesTab() {
           <h3>Neuer Zwischenstopp</h3>
           <div className="meta" style={{ marginBottom: 8 }}>Wird direkt vor dem Zielort „{stops[stops.length - 1]?.name}" eingefügt.</div>
           <AddressFields value={newStop} onChange={setNewStop} prefix="Zwischenstopp:" />
-          <label>Mitfahrbeitrag von „{stops[stops.length - 2]?.name}" bis hier (CHF)</label>
+          <label>Mitfahrbeitrag von „{stops[stops.length - 2]?.name}" bis hier (EUR)</label>
           <input type="number" min="0" step="1" value={priceToNext} onChange={(e) => setPriceToNext(e.target.value)} placeholder="0" />
           <button style={{ marginTop: 10, width: '100%' }}>Zwischenstopp hinzufügen</button>
         </form>
@@ -623,7 +713,7 @@ function RoutesTab() {
           <label>Name der Strecke</label>
           <input value={routeName} onChange={(e) => setRouteName(e.target.value)} placeholder="z.B. München - Basel" required />
 
-          <label>Gesamtbetrag für die ganze Strecke (CHF)</label>
+          <label>Gesamtbetrag für die ganze Strecke (EUR)</label>
           <input type="number" min="0" step="1" value={totalPrice} onChange={(e) => setTotalPrice(e.target.value)} placeholder="0" />
 
           <h3 style={{ marginTop: 16 }}>Startpunkt</h3>
@@ -638,7 +728,7 @@ function RoutesTab() {
       {routes.map((r) => (
         <div className="card" key={r.id}>
           <h3>{r.name}</h3>
-          <div className="meta">Gesamtbetrag: CHF {r.total_price ?? 0}</div>
+          <div className="meta">Gesamtbetrag: EUR {r.total_price ?? 0}</div>
           <div className="row" style={{ marginTop: 8 }}>
             <button onClick={() => openRouteDetail(r)}>Streckenpunkte & Beiträge</button>
             <button className="danger" onClick={() => deleteRoute(r.id)}>Löschen</button>
@@ -779,6 +869,11 @@ function TripsTab() {
     load()
   }
 
+  async function toggleClosed(t) {
+    await supabase.from('trips').update({ closed: !t.closed }).eq('id', t.id)
+    load()
+  }
+
   async function showBookings(trip) {
     setOpenTripBookings(trip)
     const { data } = await supabase
@@ -802,7 +897,7 @@ function TripsTab() {
         {bookings.length === 0 && <div className="empty-state">Noch keine Buchungen.</div>}
         {bookings.map((b) => (
           <div key={b.id} style={{ padding: '8px 0', borderBottom: '1px solid var(--color-border)' }}>
-            <strong>{b.people?.name}</strong> — {b.route_stops?.name} → {b.to_stop?.name} ({b.seats} Platz/Plätze) · CHF {b.price}
+            <strong>{b.people?.name}</strong> — {b.route_stops?.name} → {b.to_stop?.name} ({b.seats} Platz/Plätze) · EUR {b.price}
           </div>
         ))}
       </div>
@@ -854,7 +949,7 @@ function TripsTab() {
 
       {trips.map((t) => (
         <div className="card" key={t.id}>
-          <h3>{t.routes?.name}</h3>
+          <h3>{t.routes?.name} {t.closed && <span className="badge full">geschlossen</span>}</h3>
           <div className="meta">
             {formatDate(t.trip_date)} · {t.start_time?.slice(0,5)} Uhr · {t.total_seats} Plätze
             {t.cars?.name ? ` · ${t.cars.name}` : ''}
@@ -862,6 +957,7 @@ function TripsTab() {
           <div className="meta">Fahrer: {t.drivers?.name || '—'}</div>
           <div className="row">
             <button onClick={() => showBookings(t)}>Buchungen ansehen</button>
+            <button className="secondary" onClick={() => toggleClosed(t)}>{t.closed ? 'Öffnen' : 'Schließen'}</button>
             <button className="danger" onClick={() => deleteTrip(t.id)}>Löschen</button>
           </div>
         </div>

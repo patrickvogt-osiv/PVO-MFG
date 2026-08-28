@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback } from 'react'
 import { useParams } from 'react-router-dom'
 import { supabase } from '../lib/supabaseClient'
+import { getEuroExchangeRate, formatConverted } from '../lib/currency'
 
 const TOKEN_STORAGE_KEY = 'fahrt-buchung:driver-token'
 
@@ -35,6 +36,14 @@ export default function DriverPage() {
   const [openTripBookings, setOpenTripBookings] = useState(null)
   const [tripBookings, setTripBookings] = useState([])
 
+  const [showSettings, setShowSettings] = useState(false)
+  const [paymentInfo, setPaymentInfo] = useState('')
+  const [referenceCurrency, setReferenceCurrency] = useState('')
+  const [ratePer100km, setRatePer100km] = useState('')
+  const [settingsMsg, setSettingsMsg] = useState(null)
+  const [settingsBusy, setSettingsBusy] = useState(false)
+  const [conversionRate, setConversionRate] = useState(null)
+
   useEffect(() => {
     if (tokenFromUrl) {
       localStorage.setItem(TOKEN_STORAGE_KEY, tokenFromUrl)
@@ -65,7 +74,41 @@ export default function DriverPage() {
     setTrips(tripsRes.data.trips)
     setRoutes(routesRes.data?.routes || [])
     setCars(carsRes.data?.cars || [])
+    setPaymentInfo(tripsRes.data.driver?.payment_info || '')
+    setReferenceCurrency(tripsRes.data.driver?.reference_currency || '')
+    setRatePer100km(tripsRes.data.driver?.rate_eur_per_100km ?? '')
   }, [token])
+
+  useEffect(() => {
+    let cancelled = false
+    if (!referenceCurrency) { setConversionRate(null); return }
+    getEuroExchangeRate(referenceCurrency).then((rate) => { if (!cancelled) setConversionRate(rate) })
+    return () => { cancelled = true }
+  }, [referenceCurrency])
+
+  async function saveSettings(e) {
+    e.preventDefault()
+    setSettingsBusy(true)
+    setSettingsMsg(null)
+    const { data, error: err } = await supabase.rpc('fn_driver_update_profile', {
+      p_token: token,
+      p_payment_info: paymentInfo,
+      p_reference_currency: referenceCurrency,
+      p_rate_eur_per_100km: ratePer100km === '' ? null : Number(ratePer100km),
+    })
+    setSettingsBusy(false)
+    if (err || data?.error) {
+      setSettingsMsg({ type: 'error', text: 'Einstellungen konnten nicht gespeichert werden.' })
+      return
+    }
+    setSettingsMsg({ type: 'success', text: 'Einstellungen gespeichert!' })
+    loadAll()
+  }
+
+  async function toggleClosed(t) {
+    await supabase.rpc('fn_driver_set_trip_closed', { p_token: token, p_trip_id: t.id, p_closed: !t.closed })
+    loadAll()
+  }
 
   useEffect(() => { loadAll() }, [loadAll])
 
@@ -139,7 +182,7 @@ export default function DriverPage() {
             {tripBookings.length === 0 && <div className="empty-state">Noch keine Buchungen.</div>}
             {tripBookings.map((b) => (
               <div key={b.id} style={{ padding: '8px 0', borderBottom: '1px solid var(--color-border)' }}>
-                <strong>{b.person_name}</strong> — {b.from_stop} → {b.to_stop} ({b.seats} Platz/Plätze) · CHF {b.price}
+                <strong>{b.person_name}</strong> — {b.from_stop} → {b.to_stop} ({b.seats} Platz/Plätze) · EUR {b.price}
               </div>
             ))}
           </div>
@@ -156,6 +199,45 @@ export default function DriverPage() {
       </div>
 
       <div className="container">
+        <div className="card">
+          <button className="secondary" style={{ width: '100%' }} onClick={() => setShowSettings(!showSettings)}>
+            {showSettings ? 'Einstellungen schließen' : '⚙️ Meine Einstellungen (Zahlung, Währung, Rate)'}
+          </button>
+          {showSettings && (
+            <form onSubmit={saveSettings} style={{ marginTop: 12 }}>
+              <label>Zahlungshinweis/-link</label>
+              <input
+                value={paymentInfo}
+                onChange={(e) => setPaymentInfo(e.target.value)}
+                placeholder="z.B. paypal.me/deinname oder 'Twint an 079 123 45 67'"
+              />
+              <label>Referenzwährung (ISO 4217)</label>
+              <input
+                value={referenceCurrency}
+                onChange={(e) => setReferenceCurrency(e.target.value.toUpperCase())}
+                placeholder="z.B. CHF"
+                maxLength={3}
+              />
+              <label>Deine Rate (EUR pro 100 km)</label>
+              <input
+                type="number" min="0" step="0.1"
+                value={ratePer100km}
+                onChange={(e) => setRatePer100km(e.target.value)}
+                placeholder="z.B. 5"
+              />
+              {referenceCurrency && ratePer100km !== '' && (
+                <div className="meta">
+                  ≈ {formatConverted(Number(ratePer100km), conversionRate, referenceCurrency) || '…'}/100km
+                </div>
+              )}
+              {settingsMsg && <div className={`notice ${settingsMsg.type}`} style={{ marginTop: 12 }}>{settingsMsg.text}</div>}
+              <button style={{ marginTop: 12, width: '100%' }} disabled={settingsBusy}>
+                {settingsBusy ? 'Wird gespeichert …' : 'Einstellungen speichern'}
+              </button>
+            </form>
+          )}
+        </div>
+
         <div className="card">
           <h3>Fahrt veröffentlichen</h3>
           {(cars.length === 0 || routes.length === 0) && (
@@ -195,7 +277,7 @@ export default function DriverPage() {
         {trips.length === 0 && <div className="empty-state">Noch keine Fahrten veröffentlicht.</div>}
         {trips.map((t) => (
           <div className="card" key={t.id}>
-            <h3>{t.route_name}</h3>
+            <h3>{t.route_name} {t.closed && <span className="badge full">geschlossen</span>}</h3>
             <div className="meta">{formatDate(t.trip_date)} · {formatTime(t.start_time)} Uhr</div>
             {t.car_name && <div className="meta">🚗 {t.car_name}{t.car_notes ? ` (${t.car_notes})` : ''}</div>}
             <div style={{ margin: '8px 0' }}>
@@ -203,6 +285,7 @@ export default function DriverPage() {
             </div>
             <div className="row">
               <button onClick={() => showBookings(t)}>Mitfahrer ansehen</button>
+              <button className="secondary" onClick={() => toggleClosed(t)}>{t.closed ? 'Öffnen' : 'Schließen'}</button>
               <button className="danger" onClick={() => deleteTrip(t.id)}>Löschen</button>
             </div>
           </div>

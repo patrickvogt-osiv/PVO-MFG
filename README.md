@@ -35,6 +35,24 @@ normale App nutzbar (Icon auf dem Homescreen), ohne App Store.
   `VITE_ADMIN_EMAIL` öffnet — mit dem fertigen, aber noch inaktiven
   Einladungslink. Du schaltest den Zugang wie gewohnt über "Zugang
   wiederherstellen" im jeweiligen Tab frei.
+- **Alle Beträge sind in EUR.** Jeder Fahrer kann in seinem eigenen Bereich
+  ("⚙️ Meine Einstellungen") zusätzlich hinterlegen:
+  - einen Zahlungshinweis/-link (z.B. PayPal.me-Link oder Freitext wie "Twint
+    an 079 123 45 67") — wird Mitfahrern beim Buchen angezeigt
+  - eine persönliche Referenzwährung (ISO 4217, z.B. CHF)
+  - eine Rate in EUR pro 100 km, mit Live-Umrechnung in die Referenzwährung
+  Im Admin-Bereich (Tab „Strecken") kannst du beim Bearbeiten einer Strecke
+  eine "Vergleichswährung (Fahrer)" auswählen — dann werden Gesamtbetrag,
+  Mitfahrbeitrag und der aus Distanz berechnete EUR/100km-Wert jeweils mit
+  dem umgerechneten Wert in Klammern angezeigt.
+- **Fahrten schließen/öffnen**: Ein Fahrer kann eine veröffentlichte Fahrt
+  "schließen" (z.B. wenn er über die App keine weiteren Buchungen mehr
+  annehmen möchte). Mitfahrer sehen die Fahrt weiterhin, können aber nicht
+  mehr darüber buchen; sind noch Plätze frei, wird stattdessen der Hinweis
+  angezeigt, dass Restplätze über andere Plattformen gebucht werden können.
+- **Flexible Datumssuche**: Findet eine Suche mit Datum+Flexibilität eine
+  Fahrt an einem abweichenden Tag, erscheint ein Hinweis wie "Diese Fahrt
+  findet 2 Tage später statt als gesucht."
 
 ## Setup (einmalig, ca. 15 Minuten)
 
@@ -63,6 +81,7 @@ normale App nutzbar (Icon auf dem Homescreen), ohne App Store.
    - `supabase/migration_14_freie_plaetze_und_datum.sql` (korrekte freie Plätze in der Übersicht)
    - `supabase/migration_15_segment_verfuegbarkeit_suche.sql` (passgenaue Verfügbarkeit für gesuchte Verbindung)
    - `supabase/migration_16_selbstanmeldung.sql` (Selbstanmeldung für Mitfahrer/Fahrer ohne Einladungslink)
+   - `supabase/migration_17_eur_fahrerprofil_schliessen.sql` (EUR-Basis, Fahrer-Zahlungsinfo/-währung/-rate, Fahrten schließen/öffnen)
 3. Unter **Authentication → Users** einen Benutzer für dich selbst anlegen
    (E-Mail + Passwort) — das ist dein Admin-Login für `/admin`.
 4. Unter **Project Settings → API** findest du:
