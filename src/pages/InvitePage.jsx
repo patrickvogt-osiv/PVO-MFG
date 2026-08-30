@@ -18,6 +18,95 @@ function todayIso() {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 }
 
+// Lädt Leaflet (OpenStreetMap-Kartenbibliothek) einmalig per CDN nach —
+// kostenlos, kein API-Key nötig.
+function loadLeaflet() {
+  if (window.L) return Promise.resolve(window.L)
+  if (window.__leafletLoading) return window.__leafletLoading
+  window.__leafletLoading = new Promise((resolve, reject) => {
+    const link = document.createElement('link')
+    link.rel = 'stylesheet'
+    link.href = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css'
+    document.head.appendChild(link)
+    const script = document.createElement('script')
+    script.src = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js'
+    script.onload = () => resolve(window.L)
+    script.onerror = reject
+    document.head.appendChild(script)
+  })
+  return window.__leafletLoading
+}
+
+function googleMapsRouteUrl(stops) {
+  const withCoords = stops.filter((s) => s.latitude != null && s.longitude != null)
+  if (withCoords.length < 2) return null
+  const first = withCoords[0]
+  const last = withCoords[withCoords.length - 1]
+  const middle = withCoords.slice(1, -1)
+  const params = new URLSearchParams({
+    api: '1',
+    origin: `${first.latitude},${first.longitude}`,
+    destination: `${last.latitude},${last.longitude}`,
+  })
+  if (middle.length > 0) {
+    params.set('waypoints', middle.map((s) => `${s.latitude},${s.longitude}`).join('|'))
+  }
+  return `https://www.google.com/maps/dir/?${params.toString()}`
+}
+
+function RouteMap({ stops }) {
+  const mapRef = useRef(null)
+  const containerRef = useRef(null)
+  const [ready, setReady] = useState(false)
+  const [error, setError] = useState(null)
+
+  const withCoords = stops.filter((s) => s.latitude != null && s.longitude != null)
+
+  useEffect(() => {
+    let cancelled = false
+    if (withCoords.length < 2) return
+    loadLeaflet()
+      .then((L) => {
+        if (cancelled || !containerRef.current) return
+        if (mapRef.current) { mapRef.current.remove(); mapRef.current = null }
+        const map = L.map(containerRef.current)
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+          attribution: '© OpenStreetMap-Mitwirkende',
+          maxZoom: 19,
+        }).addTo(map)
+        const latlngs = withCoords.map((s) => [s.latitude, s.longitude])
+        withCoords.forEach((s, i) => {
+          L.marker([s.latitude, s.longitude]).addTo(map).bindPopup(`${i + 1}. ${s.name}`)
+        })
+        L.polyline(latlngs, { color: '#1d5f4a', weight: 4, opacity: 0.7 }).addTo(map)
+        map.fitBounds(latlngs, { padding: [24, 24] })
+        mapRef.current = map
+        setReady(true)
+      })
+      .catch(() => setError('Karte konnte nicht geladen werden.'))
+    return () => {
+      cancelled = true
+      if (mapRef.current) { mapRef.current.remove(); mapRef.current = null }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stops])
+
+  if (withCoords.length < 2) {
+    return <div className="meta">Für diese Strecke wurden noch keine Koordinaten berechnet.</div>
+  }
+  if (error) {
+    return <div className="notice error">{error}</div>
+  }
+
+  return (
+    <>
+      <div ref={containerRef} style={{ height: 260, borderRadius: 10, overflow: 'hidden', border: '1px solid var(--color-border)' }} />
+      {!ready && <div className="meta" style={{ marginTop: 6 }}>Lädt Karte …</div>}
+    </>
+  )
+}
+
+
 function formatAddress(s) {
   if (!s) return ''
   const line1 = [s.postal_code, s.name].filter(Boolean).join(' ')
@@ -93,6 +182,7 @@ export default function InvitePage() {
   const [toStop, setToStop] = useState('')
   const [seats, setSeats] = useState(1)
   const [bookingMsg, setBookingMsg] = useState(null)
+  const [streckenverlaufOpen, setStreckenverlaufOpen] = useState(false)
   const [busy, setBusy] = useState(false)
 
   const [searchCityInput, setSearchCityInput] = useState('')
@@ -734,19 +824,31 @@ export default function InvitePage() {
               </div>
             )}
 
-            <details style={{ marginTop: 10 }}>
+            <details style={{ marginTop: 10 }} onToggle={(e) => setStreckenverlaufOpen(e.target.open)}>
               <summary style={{ cursor: 'pointer', fontSize: 13, color: 'var(--color-muted)' }}>Streckenverlauf & Adressen anzeigen</summary>
-              <div style={{ marginTop: 8 }}>
-                {tripDetails.stops.map((s) => (
-                  <div key={s.id} style={{ fontSize: 13, padding: '6px 0', borderBottom: '1px solid var(--color-border)' }}>
-                    <strong>{s.name}</strong>
-                    {(s.street || s.postal_code) && <div className="meta">{formatAddress(s)}</div>}
-                    {s.maps_link && (
-                      <a href={s.maps_link} target="_blank" rel="noreferrer" style={{ fontSize: 12 }}>📍 Auf Google Maps öffnen</a>
+              {streckenverlaufOpen && (
+                <>
+                  <div style={{ marginTop: 8 }}>
+                    {tripDetails.stops.map((s) => (
+                      <div key={s.id} style={{ fontSize: 13, padding: '6px 0', borderBottom: '1px solid var(--color-border)' }}>
+                        <strong>{s.name}</strong>
+                        {(s.street || s.postal_code) && <div className="meta">{formatAddress(s)}</div>}
+                        {s.maps_link && (
+                          <a href={s.maps_link} target="_blank" rel="noreferrer" style={{ fontSize: 12 }}>📍 Auf Google Maps öffnen</a>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                  <div style={{ marginTop: 12 }}>
+                    <RouteMap stops={tripDetails.stops} />
+                    {googleMapsRouteUrl(tripDetails.stops) && (
+                      <a href={googleMapsRouteUrl(tripDetails.stops)} target="_blank" rel="noreferrer" style={{ display: 'block', marginTop: 8 }}>
+                        <button type="button" className="secondary" style={{ width: '100%' }}>🗺️ Komplette Route in Google Maps öffnen</button>
+                      </a>
                     )}
                   </div>
-                ))}
-              </div>
+                </>
+              )}
             </details>
 
             {bookingMsg && <div className={`notice ${bookingMsg.type}`} style={{ margin: '12px 0' }}>{bookingMsg.text}</div>}

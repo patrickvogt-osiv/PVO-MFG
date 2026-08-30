@@ -542,13 +542,16 @@ function RoutesTab() {
       }
       const legs = osrmData.routes[0].legs
 
-      for (let i = 0; i < legs.length; i++) {
-        const distanceKm = Math.round((legs[i].distance / 1000) * 10) / 10
-        const durationMin = Math.round(legs[i].duration / 60)
-        await supabase
-          .from('route_stops')
-          .update({ distance_to_next_km: distanceKm, duration_to_next_min: durationMin })
-          .eq('id', stops[i].id)
+      // Koordinaten für ALLE Stopps speichern (auch den letzten, der keine
+      // eigene "Distanz bis nächster Stopp" hat), damit die Kartenansicht
+      // für Mitfahrer vollständig ist.
+      for (let i = 0; i < stops.length; i++) {
+        const patch = { latitude: coords[i].lat, longitude: coords[i].lon }
+        if (i < legs.length) {
+          patch.distance_to_next_km = Math.round((legs[i].distance / 1000) * 10) / 10
+          patch.duration_to_next_min = Math.round(legs[i].duration / 60)
+        }
+        await supabase.from('route_stops').update(patch).eq('id', stops[i].id)
       }
       openRouteDetail(openRoute)
     } catch (err) {
@@ -1097,7 +1100,7 @@ function TripsTab() {
           <div className="meta">Fahrer: {t.drivers?.name || '—'}</div>
           <div className="row">
             <button onClick={() => showBookings(t)}>Buchungen ansehen</button>
-            <button className="secondary" onClick={() => toggleClosed(t)}>{t.closed ? 'Öffnen' : 'Schließen'}</button>
+            <button className="secondary" onClick={() => toggleClosed(t)}>{t.closed ? 'Buchungen wieder zulassen' : 'Neue Buchungen blockieren'}</button>
             <button className="danger" onClick={() => deleteTrip(t.id)}>Löschen</button>
           </div>
         </div>

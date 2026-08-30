@@ -89,6 +89,8 @@ create table route_stops (
   price_to_next        integer not null default 0,
   distance_to_next_km  numeric,
   duration_to_next_min integer,
+  latitude             numeric,
+  longitude            numeric,
   unique (route_id, order_index)
 );
 
@@ -291,7 +293,8 @@ begin
            json_build_object(
              'id', id, 'name', name, 'order_index', order_index,
              'postal_code', postal_code, 'street', street,
-             'house_number', house_number, 'country', country, 'maps_link', maps_link
+             'house_number', house_number, 'country', country, 'maps_link', maps_link,
+             'latitude', latitude, 'longitude', longitude
            )
            order by order_index
          ), '[]'::json)
@@ -1115,7 +1118,10 @@ grant execute on function fn_driver_update_stop_price(text, uuid, integer) to an
 -- ----------------------------------------------------------------------------
 -- Distanz/Fahrzeit eines Stopps (bis zum nächsten) speichern
 -- ----------------------------------------------------------------------------
-create or replace function fn_driver_update_stop_distance(p_token text, p_stop_id uuid, p_distance_km numeric, p_duration_min integer)
+create or replace function fn_driver_update_stop_distance(
+  p_token text, p_stop_id uuid, p_distance_km numeric, p_duration_min integer,
+  p_latitude numeric default null, p_longitude numeric default null
+)
 returns json
 language plpgsql
 security definer
@@ -1138,12 +1144,18 @@ begin
     return json_build_object('error', 'not_your_route');
   end if;
 
-  update route_stops set distance_to_next_km = p_distance_km, duration_to_next_min = p_duration_min where id = p_stop_id;
+  update route_stops
+  set distance_to_next_km = p_distance_km,
+      duration_to_next_min = p_duration_min,
+      latitude = coalesce(p_latitude, latitude),
+      longitude = coalesce(p_longitude, longitude)
+  where id = p_stop_id;
+
   return json_build_object('success', true);
 end;
 $$;
 
-grant execute on function fn_driver_update_stop_distance(text, uuid, numeric, integer) to anon;
+grant execute on function fn_driver_update_stop_distance(text, uuid, numeric, integer, numeric, numeric) to anon;
 
 -- ----------------------------------------------------------------------------
 -- Neuen Zwischenstopp anlegen (wird direkt vor dem Zielort eingefügt)

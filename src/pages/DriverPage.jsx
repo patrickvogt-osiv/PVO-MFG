@@ -364,11 +364,12 @@ function DriverRoutesManager({ token, onRoutesChanged }) {
       const osrmData = await osrmRes.json()
       if (osrmData.code !== 'Ok' || !osrmData.routes?.[0]) throw new Error('Route konnte nicht berechnet werden.')
       const legs = osrmData.routes[0].legs
-      for (let i = 0; i < legs.length; i++) {
-        const distanceKm = Math.round((legs[i].distance / 1000) * 10) / 10
-        const durationMin = Math.round(legs[i].duration / 60)
+      for (let i = 0; i < stops.length; i++) {
+        const distanceKm = i < legs.length ? Math.round((legs[i].distance / 1000) * 10) / 10 : null
+        const durationMin = i < legs.length ? Math.round(legs[i].duration / 60) : null
         await supabase.rpc('fn_driver_update_stop_distance', {
           p_token: token, p_stop_id: stops[i].id, p_distance_km: distanceKm, p_duration_min: durationMin,
+          p_latitude: coords[i].lat, p_longitude: coords[i].lon,
         })
       }
       openRouteDetail(openRoute)
@@ -539,9 +540,7 @@ export default function DriverPage() {
   const [openTripBookings, setOpenTripBookings] = useState(null)
   const [tripBookings, setTripBookings] = useState([])
 
-  const [showSettings, setShowSettings] = useState(false)
-  const [showRoutes, setShowRoutes] = useState(false)
-  const [showCars, setShowCars] = useState(false)
+  const [tab, setTab] = useState('trips') // 'trips' | 'routes' | 'cars' | 'settings'
   const [paymentInfo, setPaymentInfo] = useState('')
   const [referenceCurrency, setReferenceCurrency] = useState('')
   const [ratePer100km, setRatePer100km] = useState('')
@@ -704,11 +703,16 @@ export default function DriverPage() {
       </div>
 
       <div className="container">
-        <div className="card">
-          <button className="secondary" style={{ width: '100%' }} onClick={() => setShowSettings(!showSettings)}>
-            {showSettings ? 'Einstellungen schließen' : '⚙️ Meine Einstellungen (Zahlung, Währung, Rate)'}
-          </button>
-          {showSettings && (
+        <div className="tabs">
+          <button className={tab === 'trips' ? 'active' : ''} onClick={() => setTab('trips')}>Meine Fahrten</button>
+          <button className={tab === 'routes' ? 'active' : ''} onClick={() => setTab('routes')}>Meine Strecken</button>
+          <button className={tab === 'cars' ? 'active' : ''} onClick={() => setTab('cars')}>Meine Autos</button>
+          <button className={tab === 'settings' ? 'active' : ''} onClick={() => setTab('settings')}>Einstellungen</button>
+        </div>
+
+        {tab === 'settings' && (
+          <div className="card">
+            <h3>⚙️ Meine Einstellungen</h3>
             <form onSubmit={saveSettings} style={{ marginTop: 12 }}>
               <label>Zahlungshinweis/-link</label>
               <input
@@ -740,75 +744,77 @@ export default function DriverPage() {
                 {settingsBusy ? 'Wird gespeichert …' : 'Einstellungen speichern'}
               </button>
             </form>
-          )}
-        </div>
-
-        <div className="card">
-          <button className="secondary" style={{ width: '100%' }} onClick={() => setShowRoutes(!showRoutes)}>
-            {showRoutes ? 'Strecken schließen' : '🗺️ Meine Strecken (anlegen & bearbeiten)'}
-          </button>
-          {showRoutes && <DriverRoutesManager token={token} onRoutesChanged={loadAll} />}
-        </div>
-
-        <div className="card">
-          <button className="secondary" style={{ width: '100%' }} onClick={() => setShowCars(!showCars)}>
-            {showCars ? 'Autos schließen' : '🚗 Meine Autos (anlegen & bearbeiten)'}
-          </button>
-          {showCars && <DriverCarsManager token={token} onCarsChanged={loadAll} />}
-        </div>
-
-        <div className="card">
-          <h3>Fahrt veröffentlichen</h3>
-          {(cars.length === 0 || routes.length === 0) && (
-            <div className="notice error">Es sind noch keine Strecken oder Autos hinterlegt. Bitte den Admin fragen.</div>
-          )}
-          <form onSubmit={publishTrip}>
-            <label>Strecke</label>
-            <select value={routeId} onChange={(e) => setRouteId(e.target.value)} required disabled={routes.length === 0}>
-              <option value="">Bitte wählen</option>
-              {routes.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
-            </select>
-            <label>Auto</label>
-            <select value={carId} onChange={(e) => setCarId(e.target.value)} required disabled={cars.length === 0}>
-              <option value="">Bitte wählen</option>
-              {cars.map((c) => <option key={c.id} value={c.id}>{c.name}{c.notes ? ` (${c.notes})` : ''}</option>)}
-            </select>
-            <div className="row">
-              <div>
-                <label>Datum</label>
-                <input type="date" value={date} min={`${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, "0")}-${String(new Date().getDate()).padStart(2, "0")}`} onChange={(e) => setDate(e.target.value)} required />
-              </div>
-              <div>
-                <label>Startzeit</label>
-                <input type="time" value={time} onChange={(e) => setTime(e.target.value)} required />
-              </div>
-            </div>
-            <label>Freie Plätze</label>
-            <input type="number" min="1" value={seats} onChange={(e) => setSeats(e.target.value)} required />
-            {publishMsg && <div className={`notice ${publishMsg.type}`} style={{ marginTop: 12 }}>{publishMsg.text}</div>}
-            <button style={{ marginTop: 12, width: '100%' }} disabled={busy || cars.length === 0 || routes.length === 0}>
-              {busy ? 'Wird veröffentlicht …' : 'Veröffentlichen'}
-            </button>
-          </form>
-        </div>
-
-        <h3 style={{ margin: '20px 0 8px' }}>Meine Fahrten</h3>
-        {trips.length === 0 && <div className="empty-state">Noch keine Fahrten veröffentlicht.</div>}
-        {trips.map((t) => (
-          <div className="card" key={t.id}>
-            <h3>{t.route_name} {t.closed && <span className="badge full">geschlossen</span>}</h3>
-            <div className="meta">{formatDate(t.trip_date)} · {formatTime(t.start_time)} Uhr</div>
-            {t.car_name && <div className="meta">🚗 {t.car_name}{t.car_notes ? ` (${t.car_notes})` : ''}</div>}
-            <div style={{ margin: '8px 0' }}>
-              <span className="badge">{t.seats_booked} / {t.total_seats} Plätze gebucht</span>
-            </div>
-            <div className="row">
-              <button onClick={() => showBookings(t)}>Mitfahrer ansehen</button>
-              <button className="secondary" onClick={() => toggleClosed(t)}>{t.closed ? 'Öffnen' : 'Schließen'}</button>
-              <button className="danger" onClick={() => deleteTrip(t.id)}>Löschen</button>
-            </div>
           </div>
-        ))}
+        )}
+
+        {tab === 'routes' && (
+          <div className="card">
+            <DriverRoutesManager token={token} onRoutesChanged={loadAll} />
+          </div>
+        )}
+
+        {tab === 'cars' && (
+          <div className="card">
+            <DriverCarsManager token={token} onCarsChanged={loadAll} />
+          </div>
+        )}
+
+        {tab === 'trips' && (
+          <>
+            <div className="card">
+              <h3>Fahrt veröffentlichen</h3>
+              {(cars.length === 0 || routes.length === 0) && (
+                <div className="notice error">Es sind noch keine Strecken oder Autos hinterlegt. Bitte den Admin fragen.</div>
+              )}
+              <form onSubmit={publishTrip}>
+                <label>Strecke</label>
+                <select value={routeId} onChange={(e) => setRouteId(e.target.value)} required disabled={routes.length === 0}>
+                  <option value="">Bitte wählen</option>
+                  {routes.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
+                </select>
+                <label>Auto</label>
+                <select value={carId} onChange={(e) => setCarId(e.target.value)} required disabled={cars.length === 0}>
+                  <option value="">Bitte wählen</option>
+                  {cars.map((c) => <option key={c.id} value={c.id}>{c.name}{c.notes ? ` (${c.notes})` : ''}</option>)}
+                </select>
+                <div className="row">
+                  <div>
+                    <label>Datum</label>
+                    <input type="date" value={date} min={`${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, "0")}-${String(new Date().getDate()).padStart(2, "0")}`} onChange={(e) => setDate(e.target.value)} required />
+                  </div>
+                  <div>
+                    <label>Startzeit</label>
+                    <input type="time" value={time} onChange={(e) => setTime(e.target.value)} required />
+                  </div>
+                </div>
+                <label>Freie Plätze</label>
+                <input type="number" min="1" value={seats} onChange={(e) => setSeats(e.target.value)} required />
+                {publishMsg && <div className={`notice ${publishMsg.type}`} style={{ marginTop: 12 }}>{publishMsg.text}</div>}
+                <button style={{ marginTop: 12, width: '100%' }} disabled={busy || cars.length === 0 || routes.length === 0}>
+                  {busy ? 'Wird veröffentlicht …' : 'Veröffentlichen'}
+                </button>
+              </form>
+            </div>
+
+            <h3 style={{ margin: '20px 0 8px' }}>Meine Fahrten</h3>
+            {trips.length === 0 && <div className="empty-state">Noch keine Fahrten veröffentlicht.</div>}
+            {trips.map((t) => (
+              <div className="card" key={t.id}>
+                <h3>{t.route_name} {t.closed && <span className="badge full">geschlossen</span>}</h3>
+                <div className="meta">{formatDate(t.trip_date)} · {formatTime(t.start_time)} Uhr</div>
+                {t.car_name && <div className="meta">🚗 {t.car_name}{t.car_notes ? ` (${t.car_notes})` : ''}</div>}
+                <div style={{ margin: '8px 0' }}>
+                  <span className="badge">{t.seats_booked} / {t.total_seats} Plätze gebucht</span>
+                </div>
+                <div className="row">
+                  <button onClick={() => showBookings(t)}>Mitfahrer ansehen</button>
+                  <button className="secondary" onClick={() => toggleClosed(t)}>{t.closed ? 'Buchungen wieder zulassen' : 'Neue Buchungen blockieren'}</button>
+                  <button className="danger" onClick={() => deleteTrip(t.id)}>Löschen</button>
+                </div>
+              </div>
+            ))}
+          </>
+        )}
       </div>
     </>
   )
