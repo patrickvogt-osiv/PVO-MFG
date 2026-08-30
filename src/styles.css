@@ -82,6 +82,11 @@ body {
   color: var(--color-danger);
 }
 
+.badge-role {
+  font-size: 14px;
+  font-weight: 700;
+}
+
 button, input, select {
   font-size: 15px;
   font-family: inherit;

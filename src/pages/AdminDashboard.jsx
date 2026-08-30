@@ -630,7 +630,7 @@ function RoutesTab() {
               <hr style={{ border: 'none', borderTop: '1px solid var(--color-border)', margin: '14px 0' }} />
 
               <div className="row" style={{ alignItems: 'center' }}>
-                <span className="badge" style={{ flex: 'none' }}>{role}</span>
+                <span className="badge badge-role" style={{ flex: 'none' }}>{role}</span>
                 {isIntermediate && (
                   <>
                     <button
@@ -743,7 +743,7 @@ function RoutesTab() {
                   updateStopField(s, 'country', s.country)
                   updateStopField(s, 'maps_link', s.maps_link)
                 }}
-              >Zwischenstopp speichern</button>
+              >{i === 0 ? 'Startpunkt speichern' : i === stops.length - 1 ? 'Zielpunkt speichern' : 'Zwischenstopp speichern'}</button>
             </div>
           )
         })}

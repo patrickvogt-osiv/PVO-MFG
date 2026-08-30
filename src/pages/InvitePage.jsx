@@ -47,6 +47,7 @@ function googleMapsRouteUrl(stops) {
     api: '1',
     origin: `${first.latitude},${first.longitude}`,
     destination: `${last.latitude},${last.longitude}`,
+    travelmode: 'driving',
   })
   if (middle.length > 0) {
     params.set('waypoints', middle.map((s) => `${s.latitude},${s.longitude}`).join('|'))
@@ -183,6 +184,29 @@ export default function InvitePage() {
   const [seats, setSeats] = useState(1)
   const [bookingMsg, setBookingMsg] = useState(null)
   const [streckenverlaufOpen, setStreckenverlaufOpen] = useState(false)
+
+  const [settingsPhone, setSettingsPhone] = useState('')
+  const [settingsEmail, setSettingsEmail] = useState('')
+  const [settingsMsg, setSettingsMsg] = useState(null)
+  const [settingsBusy, setSettingsBusy] = useState(false)
+
+  async function saveProfileSettings(e) {
+    e.preventDefault()
+    setSettingsBusy(true)
+    setSettingsMsg(null)
+    const { data, error: err } = await supabase.rpc('fn_person_update_profile', {
+      p_token: token,
+      p_phone: settingsPhone,
+      p_email: settingsEmail,
+    })
+    setSettingsBusy(false)
+    if (err || data?.error) {
+      setSettingsMsg({ type: 'error', text: 'Einstellungen konnten nicht gespeichert werden.' })
+      return
+    }
+    setSettingsMsg({ type: 'success', text: 'Einstellungen gespeichert!' })
+    setPerson((prev) => ({ ...prev, phone: settingsPhone, email: settingsEmail }))
+  }
   const [busy, setBusy] = useState(false)
 
   const [searchCityInput, setSearchCityInput] = useState('')
@@ -358,6 +382,8 @@ export default function InvitePage() {
     }
     setPerson(data.person)
     setTrips(data.trips)
+    setSettingsPhone(data.person?.phone || '')
+    setSettingsEmail(data.person?.email || '')
   }, [token])
 
   // Aktualisiert die Fahrtenliste im Hintergrund (z.B. nach einer Buchung),
@@ -667,6 +693,9 @@ export default function InvitePage() {
           <button className={tab === 'mine' ? 'active' : ''} onClick={() => setTab('mine')}>
             Meine Buchungen
           </button>
+          <button className={tab === 'settings' ? 'active' : ''} onClick={() => setTab('settings')}>
+            Einstellungen
+          </button>
         </div>
 
         {tab === 'trips' && !selectedTrip && (
@@ -971,6 +1000,22 @@ export default function InvitePage() {
               )
             })}
           </>
+        )}
+
+        {tab === 'settings' && (
+          <div className="card">
+            <h3>⚙️ Meine Einstellungen</h3>
+            <form onSubmit={saveProfileSettings} style={{ marginTop: 12 }}>
+              <label>Mobilnummer</label>
+              <input type="tel" value={settingsPhone} onChange={(e) => setSettingsPhone(e.target.value)} placeholder="z.B. 079 123 45 67" />
+              <label>E-Mail</label>
+              <input type="email" value={settingsEmail} onChange={(e) => setSettingsEmail(e.target.value)} placeholder="deine@email.ch" />
+              {settingsMsg && <div className={`notice ${settingsMsg.type}`} style={{ marginTop: 12 }}>{settingsMsg.text}</div>}
+              <button style={{ marginTop: 12, width: '100%' }} disabled={settingsBusy}>
+                {settingsBusy ? 'Wird gespeichert …' : 'Einstellungen speichern'}
+              </button>
+            </form>
+          </div>
         )}
       </div>
     </>

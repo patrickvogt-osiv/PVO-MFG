@@ -243,7 +243,7 @@ begin
   ) t;
 
   return json_build_object(
-    'person', json_build_object('id', v_person.id, 'name', v_person.name),
+    'person', json_build_object('id', v_person.id, 'name', v_person.name, 'phone', v_person.phone, 'email', v_person.email),
     'trips', v_trips
   );
 end;
@@ -622,6 +622,7 @@ begin
   return json_build_object(
     'driver', json_build_object(
       'id', v_driver.id, 'name', v_driver.name,
+      'phone', v_driver.phone, 'email', v_driver.email,
       'payment_info', v_driver.payment_info,
       'reference_currency', v_driver.reference_currency,
       'rate_eur_per_100km', v_driver.rate_eur_per_100km
@@ -800,7 +801,9 @@ create or replace function fn_driver_update_profile(
   p_token              text,
   p_payment_info       text,
   p_reference_currency text,
-  p_rate_eur_per_100km numeric
+  p_rate_eur_per_100km numeric,
+  p_phone              text default null,
+  p_email              text default null
 )
 returns json
 language plpgsql
@@ -818,14 +821,16 @@ begin
   update drivers
   set payment_info       = nullif(trim(p_payment_info), ''),
       reference_currency = nullif(upper(trim(p_reference_currency)), ''),
-      rate_eur_per_100km = p_rate_eur_per_100km
+      rate_eur_per_100km = p_rate_eur_per_100km,
+      phone              = nullif(trim(p_phone), ''),
+      email              = nullif(trim(p_email), '')
   where id = v_driver.id;
 
   return json_build_object('success', true);
 end;
 $$;
 
-grant execute on function fn_driver_update_profile(text, text, text, numeric) to anon;
+grant execute on function fn_driver_update_profile(text, text, text, numeric, text, text) to anon;
 
 -- Fahrt schließen/öffnen (Fahrer)
 create or replace function fn_driver_set_trip_closed(p_token text, p_trip_id uuid, p_closed boolean)
@@ -1443,3 +1448,31 @@ end;
 $$;
 
 grant execute on function fn_driver_delete_car(text, uuid) to anon;
+
+-- ----------------------------------------------------------------------------
+-- Mitfahrer: eigenes Profil (Telefon/E-Mail) selbst aktualisieren
+-- ----------------------------------------------------------------------------
+create or replace function fn_person_update_profile(p_token text, p_phone text, p_email text)
+returns json
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_person people%rowtype;
+begin
+  select * into v_person from people where invite_token = p_token and not revoked;
+  if not found then
+    return json_build_object('error', 'invalid_token');
+  end if;
+
+  update people
+  set phone = nullif(trim(p_phone), ''),
+      email = nullif(trim(p_email), '')
+  where id = v_person.id;
+
+  return json_build_object('success', true);
+end;
+$$;
+
+grant execute on function fn_person_update_profile(text, text, text) to anon;

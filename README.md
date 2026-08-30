@@ -93,6 +93,7 @@ normale App nutzbar (Icon auf dem Homescreen), ohne App Store.
    - `supabase/migration_19_fahrer_eigene_autos.sql` (Fahrer können eigene Autos anlegen/verwalten)
    - `supabase/migration_20_auto_details.sql` (Auto-Größe, Antrieb, Ausstattung)
    - `supabase/migration_21_kartenansicht.sql` (Koordinaten je Stopp für Kartenansicht)
+   - `supabase/migration_22_kontaktdaten_einstellungen.sql` (Telefon/E-Mail bei Fahrer- und Mitfahrer-Einstellungen)
 3. Unter **Authentication → Users** einen Benutzer für dich selbst anlegen
    (E-Mail + Passwort) — das ist dein Admin-Login für `/admin`.
 4. Unter **Project Settings → API** findest du:

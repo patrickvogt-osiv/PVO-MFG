@@ -406,7 +406,7 @@ function DriverRoutesManager({ token, onRoutesChanged }) {
             <div key={s.id}>
               <hr style={{ border: 'none', borderTop: '1px solid var(--color-border)', margin: '14px 0' }} />
               <div className="row" style={{ alignItems: 'center' }}>
-                <span className="badge" style={{ flex: 'none' }}>{role}</span>
+                <span className="badge badge-role" style={{ flex: 'none' }}>{role}</span>
                 {isIntermediate && (
                   <>
                     <button className="secondary" style={{ padding: '4px 8px', fontSize: 12, flex: 'none', marginLeft: 'auto' }} disabled={i === 1} onClick={() => moveStop(i, -1)}>↑</button>
@@ -469,7 +469,7 @@ function DriverRoutesManager({ token, onRoutesChanged }) {
                   updateStopField(s, 'country', s.country)
                   updateStopField(s, 'maps_link', s.maps_link)
                 }}
-              >Zwischenstopp speichern</button>
+              >{i === 0 ? 'Startpunkt speichern' : i === stops.length - 1 ? 'Zielpunkt speichern' : 'Zwischenstopp speichern'}</button>
             </div>
           )
         })}
@@ -542,6 +542,8 @@ export default function DriverPage() {
 
   const [tab, setTab] = useState('trips') // 'trips' | 'routes' | 'cars' | 'settings'
   const [paymentInfo, setPaymentInfo] = useState('')
+  const [driverPhone, setDriverPhone] = useState('')
+  const [driverEmail, setDriverEmail] = useState('')
   const [referenceCurrency, setReferenceCurrency] = useState('')
   const [ratePer100km, setRatePer100km] = useState('')
   const [settingsMsg, setSettingsMsg] = useState(null)
@@ -579,6 +581,8 @@ export default function DriverPage() {
     setRoutes(routesRes.data?.routes || [])
     setCars(carsRes.data?.cars || [])
     setPaymentInfo(tripsRes.data.driver?.payment_info || '')
+    setDriverPhone(tripsRes.data.driver?.phone || '')
+    setDriverEmail(tripsRes.data.driver?.email || '')
     setReferenceCurrency(tripsRes.data.driver?.reference_currency || '')
     setRatePer100km(tripsRes.data.driver?.rate_eur_per_100km ?? '')
   }, [token])
@@ -599,6 +603,8 @@ export default function DriverPage() {
       p_payment_info: paymentInfo,
       p_reference_currency: referenceCurrency,
       p_rate_eur_per_100km: ratePer100km === '' ? null : Number(ratePer100km),
+      p_phone: driverPhone,
+      p_email: driverEmail,
     })
     setSettingsBusy(false)
     if (err || data?.error) {
@@ -714,6 +720,10 @@ export default function DriverPage() {
           <div className="card">
             <h3>⚙️ Meine Einstellungen</h3>
             <form onSubmit={saveSettings} style={{ marginTop: 12 }}>
+              <label>Mobilnummer</label>
+              <input type="tel" value={driverPhone} onChange={(e) => setDriverPhone(e.target.value)} placeholder="z.B. 079 123 45 67" />
+              <label>E-Mail</label>
+              <input type="email" value={driverEmail} onChange={(e) => setDriverEmail(e.target.value)} placeholder="deine@email.ch" />
               <label>Zahlungshinweis/-link</label>
               <input
                 value={paymentInfo}
