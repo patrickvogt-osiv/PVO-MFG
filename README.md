@@ -91,6 +91,7 @@ normale App nutzbar (Icon auf dem Homescreen), ohne App Store.
    - `supabase/migration_17_eur_fahrerprofil_schliessen.sql` (EUR-Basis, Fahrer-Zahlungsinfo/-währung/-rate, Fahrten schließen/öffnen)
    - `supabase/migration_18_fahrer_eigene_strecken.sql` (Fahrer können eigene Strecken anlegen/verwalten)
    - `supabase/migration_19_fahrer_eigene_autos.sql` (Fahrer können eigene Autos anlegen/verwalten)
+   - `supabase/migration_20_auto_details.sql` (Auto-Größe, Antrieb, Ausstattung)
 3. Unter **Authentication → Users** einen Benutzer für dich selbst anlegen
    (E-Mail + Passwort) — das ist dein Admin-Login für `/admin`.
 4. Unter **Project Settings → API** findest du:

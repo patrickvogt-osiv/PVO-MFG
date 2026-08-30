@@ -44,11 +44,16 @@ create table drivers (
 
 -- Autos, die für Fahrten genutzt werden. Jedes Auto gehört einem Fahrer.
 create table cars (
-  id         uuid primary key default gen_random_uuid(),
-  name       text not null,
-  notes      text,
-  driver_id  uuid references drivers(id),
-  created_at timestamptz not null default now()
+  id                uuid primary key default gen_random_uuid(),
+  name              text not null,
+  notes             text,
+  driver_id         uuid references drivers(id),
+  size              text, -- 'Klein' | 'Kompakt' | 'Mittelklasse' | 'Oberklasse'
+  drive_type        text, -- 'Elektro' | 'Verbrenner'
+  has_ac            boolean not null default false,
+  has_seat_heating  boolean not null default false,
+  has_usb           boolean not null default false,
+  created_at        timestamptz not null default now()
 );
 
 -- Vordefinierte Strecken, z.B. "Basel - München".
@@ -1315,7 +1320,13 @@ begin
     return json_build_object('error', 'invalid_token');
   end if;
 
-  select coalesce(json_agg(json_build_object('id', id, 'name', name, 'notes', notes) order by created_at desc), '[]'::json)
+  select coalesce(json_agg(
+           json_build_object(
+             'id', id, 'name', name, 'notes', notes, 'size', size, 'drive_type', drive_type,
+             'has_ac', has_ac, 'has_seat_heating', has_seat_heating, 'has_usb', has_usb
+           )
+           order by created_at desc
+         ), '[]'::json)
   into v_cars
   from cars where driver_id = v_driver.id;
 
@@ -1325,7 +1336,11 @@ $$;
 
 grant execute on function fn_driver_list_own_cars(text) to anon;
 
-create or replace function fn_driver_create_car(p_token text, p_name text, p_notes text)
+create or replace function fn_driver_create_car(
+  p_token text, p_name text, p_notes text,
+  p_size text default null, p_drive_type text default null,
+  p_has_ac boolean default false, p_has_seat_heating boolean default false, p_has_usb boolean default false
+)
 returns json
 language plpgsql
 security definer
@@ -1344,17 +1359,21 @@ begin
     return json_build_object('error', 'missing_name');
   end if;
 
-  insert into cars (name, notes, driver_id)
-  values (trim(p_name), nullif(trim(p_notes), ''), v_driver.id)
+  insert into cars (name, notes, driver_id, size, drive_type, has_ac, has_seat_heating, has_usb)
+  values (trim(p_name), nullif(trim(p_notes), ''), v_driver.id, nullif(p_size,''), nullif(p_drive_type,''), coalesce(p_has_ac,false), coalesce(p_has_seat_heating,false), coalesce(p_has_usb,false))
   returning id into v_car_id;
 
   return json_build_object('success', true, 'car_id', v_car_id);
 end;
 $$;
 
-grant execute on function fn_driver_create_car(text, text, text) to anon;
+grant execute on function fn_driver_create_car(text, text, text, text, text, boolean, boolean, boolean) to anon;
 
-create or replace function fn_driver_update_car(p_token text, p_car_id uuid, p_name text, p_notes text)
+create or replace function fn_driver_update_car(
+  p_token text, p_car_id uuid, p_name text, p_notes text,
+  p_size text default null, p_drive_type text default null,
+  p_has_ac boolean default false, p_has_seat_heating boolean default false, p_has_usb boolean default false
+)
 returns json
 language plpgsql
 security definer
@@ -1368,7 +1387,14 @@ begin
     return json_build_object('error', 'invalid_token');
   end if;
 
-  update cars set name = trim(p_name), notes = nullif(trim(p_notes), '')
+  update cars
+  set name = trim(p_name),
+      notes = nullif(trim(p_notes), ''),
+      size = nullif(p_size, ''),
+      drive_type = nullif(p_drive_type, ''),
+      has_ac = coalesce(p_has_ac, false),
+      has_seat_heating = coalesce(p_has_seat_heating, false),
+      has_usb = coalesce(p_has_usb, false)
   where id = p_car_id and driver_id = v_driver.id;
 
   if not found then
@@ -1379,7 +1405,7 @@ begin
 end;
 $$;
 
-grant execute on function fn_driver_update_car(text, uuid, text, text) to anon;
+grant execute on function fn_driver_update_car(text, uuid, text, text, text, text, boolean, boolean, boolean) to anon;
 
 create or replace function fn_driver_delete_car(p_token text, p_car_id uuid)
 returns json

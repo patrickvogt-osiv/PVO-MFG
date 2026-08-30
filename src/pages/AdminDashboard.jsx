@@ -341,9 +341,27 @@ function RoutesTab() {
     return text ? ` (${text})` : ''
   }
 
+  const [routeStopsMap, setRouteStopsMap] = useState({})
+
   const loadRoutes = useCallback(async () => {
-    const { data } = await supabase.from('routes').select('*').order('created_at', { ascending: false })
+    const { data } = await supabase.from('routes').select('*, drivers(name)').order('created_at', { ascending: false })
     setRoutes(data || [])
+
+    if (data && data.length > 0) {
+      const { data: stopsData } = await supabase
+        .from('route_stops')
+        .select('route_id, name, order_index')
+        .in('route_id', data.map((r) => r.id))
+        .order('order_index', { ascending: true })
+      const grouped = {}
+      for (const s of stopsData || []) {
+        grouped[s.route_id] = grouped[s.route_id] || []
+        grouped[s.route_id].push(s)
+      }
+      setRouteStopsMap(grouped)
+    } else {
+      setRouteStopsMap({})
+    }
   }, [])
 
   useEffect(() => { loadRoutes() }, [loadRoutes])
@@ -759,31 +777,54 @@ function RoutesTab() {
           <button style={{ marginTop: 14, width: '100%' }}>Strecke anlegen</button>
         </form>
       </div>
-      {routes.map((r) => (
-        <div className="card" key={r.id}>
-          <h3>{r.name}</h3>
-          <div className="meta">Gesamtbetrag: EUR {r.total_price ?? 0}</div>
-          <div className="row" style={{ marginTop: 8 }}>
-            <button onClick={() => openRouteDetail(r)}>Streckenpunkte & Beiträge</button>
-            <button className="danger" onClick={() => deleteRoute(r.id)}>Löschen</button>
+      {routes.map((r) => {
+        const stops = routeStopsMap[r.id] || []
+        const via = stops.length > 2 ? stops.slice(1, -1).map((s) => s.name).join(', ') : ''
+        return (
+          <div className="card" key={r.id}>
+            {r.drivers?.name && <div className="meta">Fahrer {r.drivers.name}</div>}
+            <h3>{r.name}</h3>
+            <div className="meta">Gesamtbetrag: EUR {r.total_price ?? 0}{via && ` · via ${via}`}</div>
+            <div className="row" style={{ marginTop: 8 }}>
+              <button onClick={() => openRouteDetail(r)}>Streckenpunkte & Beiträge</button>
+              <button className="danger" onClick={() => deleteRoute(r.id)}>Löschen</button>
+            </div>
           </div>
-        </div>
-      ))}
+        )
+      })}
     </>
   )
 }
 
 // ---------------------------------------------------------------------------
+const CAR_SIZE_OPTIONS = ['Klein', 'Kompakt', 'Mittelklasse', 'Oberklasse']
+const CAR_DRIVE_OPTIONS = ['Elektro', 'Verbrenner']
+
 function CarsTab() {
   const [cars, setCars] = useState([])
   const [drivers, setDrivers] = useState([])
   const [name, setName] = useState('')
   const [notes, setNotes] = useState('')
   const [driverId, setDriverId] = useState('')
+  const [size, setSize] = useState('')
+  const [driveType, setDriveType] = useState('')
+  const [hasAc, setHasAc] = useState(false)
+  const [hasSeatHeating, setHasSeatHeating] = useState(false)
+  const [hasUsb, setHasUsb] = useState(false)
+  const [drafts, setDrafts] = useState({})
+  const [savedId, setSavedId] = useState(null)
 
   const load = useCallback(async () => {
     const { data } = await supabase.from('cars').select('*, drivers(name)').order('created_at', { ascending: false })
     setCars(data || [])
+    const nextDrafts = {}
+    for (const c of data || []) {
+      nextDrafts[c.id] = {
+        size: c.size || '', drive_type: c.drive_type || '',
+        has_ac: c.has_ac || false, has_seat_heating: c.has_seat_heating || false, has_usb: c.has_usb || false,
+      }
+    }
+    setDrafts(nextDrafts)
     const { data: dr } = await supabase.from('drivers').select('*').order('name')
     setDrivers(dr || [])
   }, [])
@@ -793,11 +834,14 @@ function CarsTab() {
   async function addCar(e) {
     e.preventDefault()
     if (!name.trim() || !driverId) return
-    const { error } = await supabase.from('cars').insert({ name: name.trim(), notes: notes.trim() || null, driver_id: driverId })
+    const { error } = await supabase.from('cars').insert({
+      name: name.trim(), notes: notes.trim() || null, driver_id: driverId,
+      size: size || null, drive_type: driveType || null,
+      has_ac: hasAc, has_seat_heating: hasSeatHeating, has_usb: hasUsb,
+    })
     if (error) { alert('Fehler beim Anlegen: ' + error.message); return }
-    setName('')
-    setNotes('')
-    setDriverId('')
+    setName(''); setNotes(''); setDriverId(''); setSize(''); setDriveType('')
+    setHasAc(false); setHasSeatHeating(false); setHasUsb(false)
     load()
   }
 
@@ -809,6 +853,22 @@ function CarsTab() {
 
   async function reassignDriver(car, newDriverId) {
     await supabase.from('cars').update({ driver_id: newDriverId || null }).eq('id', car.id)
+    load()
+  }
+
+  function updateDraft(carId, field, value) {
+    setDrafts((prev) => ({ ...prev, [carId]: { ...prev[carId], [field]: value } }))
+  }
+
+  async function saveDetails(c) {
+    const draft = drafts[c.id]
+    const { error } = await supabase.from('cars').update({
+      size: draft.size || null, drive_type: draft.drive_type || null,
+      has_ac: draft.has_ac, has_seat_heating: draft.has_seat_heating, has_usb: draft.has_usb,
+    }).eq('id', c.id)
+    if (error) { alert('Fehler beim Speichern: ' + error.message); return }
+    setSavedId(c.id)
+    setTimeout(() => setSavedId(null), 1500)
     load()
   }
 
@@ -829,22 +889,68 @@ function CarsTab() {
             <option value="">Bitte wählen</option>
             {drivers.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
           </select>
+          <label>Größe</label>
+          <select value={size} onChange={(e) => setSize(e.target.value)}>
+            <option value="">Bitte wählen</option>
+            {CAR_SIZE_OPTIONS.map((o) => <option key={o} value={o}>{o}</option>)}
+          </select>
+          <label>Antrieb</label>
+          <select value={driveType} onChange={(e) => setDriveType(e.target.value)}>
+            <option value="">Bitte wählen</option>
+            {CAR_DRIVE_OPTIONS.map((o) => <option key={o} value={o}>{o}</option>)}
+          </select>
+          <label style={{ marginTop: 12 }}>Extras</label>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontWeight: 400, marginTop: 6 }}>
+            <input type="checkbox" checked={hasAc} onChange={(e) => setHasAc(e.target.checked)} style={{ width: 'auto' }} /> Klimaanlage
+          </label>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontWeight: 400, marginTop: 6 }}>
+            <input type="checkbox" checked={hasSeatHeating} onChange={(e) => setHasSeatHeating(e.target.checked)} style={{ width: 'auto' }} /> Sitzheizung
+          </label>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontWeight: 400, marginTop: 6 }}>
+            <input type="checkbox" checked={hasUsb} onChange={(e) => setHasUsb(e.target.checked)} style={{ width: 'auto' }} /> USB-Anschluss
+          </label>
           <button style={{ marginTop: 12, width: '100%' }} disabled={drivers.length === 0}>Auto hinzufügen</button>
         </form>
       </div>
       {cars.length === 0 && <div className="empty-state">Noch keine Autos angelegt.</div>}
-      {cars.map((c) => (
-        <div className="card" key={c.id}>
-          <h3>{c.name}</h3>
-          {c.notes && <div className="meta">{c.notes}</div>}
-          <label style={{ marginTop: 8 }}>Fahrer</label>
-          <select value={c.driver_id || ''} onChange={(e) => reassignDriver(c, e.target.value)}>
-            <option value="">Kein Fahrer zugeordnet</option>
-            {drivers.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
-          </select>
-          <button className="danger" style={{ marginTop: 10 }} onClick={() => deleteCar(c.id)}>Löschen</button>
-        </div>
-      ))}
+      {cars.map((c) => {
+        const draft = drafts[c.id] || { size: '', drive_type: '', has_ac: false, has_seat_heating: false, has_usb: false }
+        return (
+          <div className="card" key={c.id}>
+            <h3>{c.name}</h3>
+            {c.notes && <div className="meta">{c.notes}</div>}
+            <label style={{ marginTop: 8 }}>Fahrer</label>
+            <select value={c.driver_id || ''} onChange={(e) => reassignDriver(c, e.target.value)}>
+              <option value="">Kein Fahrer zugeordnet</option>
+              {drivers.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+            </select>
+            <label>Größe</label>
+            <select value={draft.size} onChange={(e) => updateDraft(c.id, 'size', e.target.value)}>
+              <option value="">Keine Angabe</option>
+              {CAR_SIZE_OPTIONS.map((o) => <option key={o} value={o}>{o}</option>)}
+            </select>
+            <label>Antrieb</label>
+            <select value={draft.drive_type} onChange={(e) => updateDraft(c.id, 'drive_type', e.target.value)}>
+              <option value="">Keine Angabe</option>
+              {CAR_DRIVE_OPTIONS.map((o) => <option key={o} value={o}>{o}</option>)}
+            </select>
+            <label style={{ marginTop: 12 }}>Extras</label>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontWeight: 400, marginTop: 6 }}>
+              <input type="checkbox" checked={draft.has_ac} onChange={(e) => updateDraft(c.id, 'has_ac', e.target.checked)} style={{ width: 'auto' }} /> Klimaanlage
+            </label>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontWeight: 400, marginTop: 6 }}>
+              <input type="checkbox" checked={draft.has_seat_heating} onChange={(e) => updateDraft(c.id, 'has_seat_heating', e.target.checked)} style={{ width: 'auto' }} /> Sitzheizung
+            </label>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontWeight: 400, marginTop: 6 }}>
+              <input type="checkbox" checked={draft.has_usb} onChange={(e) => updateDraft(c.id, 'has_usb', e.target.checked)} style={{ width: 'auto' }} /> USB-Anschluss
+            </label>
+            <button className="secondary" style={{ marginTop: 10, width: '100%' }} onClick={() => saveDetails(c)}>
+              {savedId === c.id ? '✓ Gespeichert' : 'Details speichern'}
+            </button>
+            <button className="danger" style={{ marginTop: 10 }} onClick={() => deleteCar(c.id)}>Löschen</button>
+          </div>
+        )
+      })}
     </>
   )
 }

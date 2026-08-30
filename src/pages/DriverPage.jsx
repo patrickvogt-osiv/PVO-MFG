@@ -58,10 +58,18 @@ function AddressFields({ value, onChange, prefix }) {
 
 // ---------------------------------------------------------------------------
 // Eigene Autos eines Fahrers: anlegen, bearbeiten, löschen.
+const CAR_SIZE_OPTIONS = ['Klein', 'Kompakt', 'Mittelklasse', 'Oberklasse']
+const CAR_DRIVE_OPTIONS = ['Elektro', 'Verbrenner']
+
 function DriverCarsManager({ token, onCarsChanged }) {
   const [ownCars, setOwnCars] = useState([])
   const [name, setName] = useState('')
   const [notes, setNotes] = useState('')
+  const [size, setSize] = useState('')
+  const [driveType, setDriveType] = useState('')
+  const [hasAc, setHasAc] = useState(false)
+  const [hasSeatHeating, setHasSeatHeating] = useState(false)
+  const [hasUsb, setHasUsb] = useState(false)
   const [createError, setCreateError] = useState(null)
   const [drafts, setDrafts] = useState({})
   const [savedId, setSavedId] = useState(null)
@@ -71,7 +79,12 @@ function DriverCarsManager({ token, onCarsChanged }) {
     const cars = data?.cars || []
     setOwnCars(cars)
     const nextDrafts = {}
-    for (const c of cars) nextDrafts[c.id] = { name: c.name, notes: c.notes || '' }
+    for (const c of cars) {
+      nextDrafts[c.id] = {
+        name: c.name, notes: c.notes || '', size: c.size || '', drive_type: c.drive_type || '',
+        has_ac: c.has_ac || false, has_seat_heating: c.has_seat_heating || false, has_usb: c.has_usb || false,
+      }
+    }
     setDrafts(nextDrafts)
   }, [token])
 
@@ -81,17 +94,22 @@ function DriverCarsManager({ token, onCarsChanged }) {
     e.preventDefault()
     setCreateError(null)
     if (!name.trim()) return
-    const { data, error: err } = await supabase.rpc('fn_driver_create_car', { p_token: token, p_name: name.trim(), p_notes: notes.trim() })
+    const { data, error: err } = await supabase.rpc('fn_driver_create_car', {
+      p_token: token, p_name: name.trim(), p_notes: notes.trim(),
+      p_size: size, p_drive_type: driveType, p_has_ac: hasAc, p_has_seat_heating: hasSeatHeating, p_has_usb: hasUsb,
+    })
     if (err || data?.error) { setCreateError('Auto konnte nicht angelegt werden.'); return }
-    setName(''); setNotes('')
+    setName(''); setNotes(''); setSize(''); setDriveType(''); setHasAc(false); setHasSeatHeating(false); setHasUsb(false)
     loadOwnCars()
     onCarsChanged?.()
   }
 
   async function saveCar(c) {
-    const draft = drafts[c.id] || { name: c.name, notes: c.notes || '' }
+    const draft = drafts[c.id]
     const { error: err } = await supabase.rpc('fn_driver_update_car', {
       p_token: token, p_car_id: c.id, p_name: draft.name, p_notes: draft.notes,
+      p_size: draft.size, p_drive_type: draft.drive_type,
+      p_has_ac: draft.has_ac, p_has_seat_heating: draft.has_seat_heating, p_has_usb: draft.has_usb,
     })
     if (err) { alert('Auto konnte nicht gespeichert werden.'); return }
     setSavedId(c.id)
@@ -107,6 +125,10 @@ function DriverCarsManager({ token, onCarsChanged }) {
     onCarsChanged?.()
   }
 
+  function updateDraft(carId, field, value) {
+    setDrafts((prev) => ({ ...prev, [carId]: { ...prev[carId], [field]: value } }))
+  }
+
   return (
     <div style={{ marginTop: 12 }}>
       <h3>Neues Auto</h3>
@@ -115,6 +137,26 @@ function DriverCarsManager({ token, onCarsChanged }) {
         <input value={name} onChange={(e) => setName(e.target.value)} placeholder="z.B. VW Passat (blau)" required />
         <label>Notiz (optional)</label>
         <input value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="z.B. Kennzeichen, Farbe" />
+        <label>Größe</label>
+        <select value={size} onChange={(e) => setSize(e.target.value)}>
+          <option value="">Bitte wählen</option>
+          {CAR_SIZE_OPTIONS.map((o) => <option key={o} value={o}>{o}</option>)}
+        </select>
+        <label>Antrieb</label>
+        <select value={driveType} onChange={(e) => setDriveType(e.target.value)}>
+          <option value="">Bitte wählen</option>
+          {CAR_DRIVE_OPTIONS.map((o) => <option key={o} value={o}>{o}</option>)}
+        </select>
+        <label style={{ marginTop: 12 }}>Extras</label>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontWeight: 400, marginTop: 6 }}>
+          <input type="checkbox" checked={hasAc} onChange={(e) => setHasAc(e.target.checked)} style={{ width: 'auto' }} /> Klimaanlage
+        </label>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontWeight: 400, marginTop: 6 }}>
+          <input type="checkbox" checked={hasSeatHeating} onChange={(e) => setHasSeatHeating(e.target.checked)} style={{ width: 'auto' }} /> Sitzheizung
+        </label>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontWeight: 400, marginTop: 6 }}>
+          <input type="checkbox" checked={hasUsb} onChange={(e) => setHasUsb(e.target.checked)} style={{ width: 'auto' }} /> USB-Anschluss
+        </label>
         {createError && <div className="notice error" style={{ marginTop: 12 }}>{createError}</div>}
         <button style={{ marginTop: 12, width: '100%' }}>Auto hinzufügen</button>
       </form>
@@ -122,19 +164,33 @@ function DriverCarsManager({ token, onCarsChanged }) {
       <h3 style={{ marginTop: 20 }}>Meine Autos</h3>
       {ownCars.length === 0 && <div className="empty-state">Noch keine eigenen Autos angelegt.</div>}
       {ownCars.map((c) => {
-        const draft = drafts[c.id] || { name: c.name, notes: c.notes || '' }
+        const draft = drafts[c.id] || { name: c.name, notes: c.notes || '', size: '', drive_type: '', has_ac: false, has_seat_heating: false, has_usb: false }
         return (
           <div className="card" key={c.id}>
             <label>Name</label>
-            <input
-              value={draft.name}
-              onChange={(e) => setDrafts((prev) => ({ ...prev, [c.id]: { ...prev[c.id], name: e.target.value } }))}
-            />
+            <input value={draft.name} onChange={(e) => updateDraft(c.id, 'name', e.target.value)} />
             <label>Notiz</label>
-            <input
-              value={draft.notes}
-              onChange={(e) => setDrafts((prev) => ({ ...prev, [c.id]: { ...prev[c.id], notes: e.target.value } }))}
-            />
+            <input value={draft.notes} onChange={(e) => updateDraft(c.id, 'notes', e.target.value)} />
+            <label>Größe</label>
+            <select value={draft.size} onChange={(e) => updateDraft(c.id, 'size', e.target.value)}>
+              <option value="">Keine Angabe</option>
+              {CAR_SIZE_OPTIONS.map((o) => <option key={o} value={o}>{o}</option>)}
+            </select>
+            <label>Antrieb</label>
+            <select value={draft.drive_type} onChange={(e) => updateDraft(c.id, 'drive_type', e.target.value)}>
+              <option value="">Keine Angabe</option>
+              {CAR_DRIVE_OPTIONS.map((o) => <option key={o} value={o}>{o}</option>)}
+            </select>
+            <label style={{ marginTop: 12 }}>Extras</label>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontWeight: 400, marginTop: 6 }}>
+              <input type="checkbox" checked={draft.has_ac} onChange={(e) => updateDraft(c.id, 'has_ac', e.target.checked)} style={{ width: 'auto' }} /> Klimaanlage
+            </label>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontWeight: 400, marginTop: 6 }}>
+              <input type="checkbox" checked={draft.has_seat_heating} onChange={(e) => updateDraft(c.id, 'has_seat_heating', e.target.checked)} style={{ width: 'auto' }} /> Sitzheizung
+            </label>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontWeight: 400, marginTop: 6 }}>
+              <input type="checkbox" checked={draft.has_usb} onChange={(e) => updateDraft(c.id, 'has_usb', e.target.checked)} style={{ width: 'auto' }} /> USB-Anschluss
+            </label>
             <div className="row" style={{ marginTop: 10 }}>
               <button className="secondary" onClick={() => saveCar(c)}>{savedId === c.id ? '✓ Gespeichert' : 'Speichern'}</button>
               <button className="danger" onClick={() => deleteCar(c.id)}>Löschen</button>
