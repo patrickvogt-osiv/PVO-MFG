@@ -204,3 +204,30 @@ input, select {
   padding: 40px 20px;
   font-size: 14px;
 }
+
+details > summary {
+  list-style: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+details > summary::-webkit-details-marker {
+  display: none;
+}
+
+details > summary::marker {
+  content: '';
+}
+
+.summary-chevron {
+  display: inline-block;
+  transition: transform 0.2s ease;
+  font-size: 11px;
+  color: var(--color-primary);
+}
+
+details[open] > summary .summary-chevron {
+  transform: rotate(90deg);
+}

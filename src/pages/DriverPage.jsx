@@ -14,13 +14,101 @@ function formatTime(timeStr) {
   return timeStr?.slice(0, 5)
 }
 
+const PERSON_RATING_CATEGORIES = [
+  { key: 'punctuality', label: 'Pünktlichkeit am Startpunkt' },
+  { key: 'cleanliness', label: 'Sauberkeit' },
+  { key: 'communication', label: 'Kommunikation' },
+]
+
+function StarInput({ value, onChange }) {
+  return (
+    <div style={{ display: 'flex', gap: 4 }}>
+      {[1, 2, 3, 4, 5].map((n) => (
+        <button
+          key={n}
+          type="button"
+          onClick={() => onChange(n)}
+          style={{ background: 'none', border: 'none', padding: 0, fontSize: 22, lineHeight: 1, cursor: 'pointer', color: n <= value ? '#f0a500' : '#d8dbe0' }}
+        >★</button>
+      ))}
+    </div>
+  )
+}
+
 function emptyAddress() {
   return { name: '', postal_code: '', street: '', house_number: '', country: '', maps_link: '' }
+}
+
+// Zerlegt einen frei eingegebenen Adresstext (z.B. "Wünscherstraße 42, 80939
+// München") über OpenStreetMap (Nominatim, kostenlos, kein Key) in Straße,
+// Hausnummer, PLZ und Ort. Land bekommt "Deutschland" als Standardwert, falls
+// keines erkannt wird.
+async function parseAddressText(text) {
+  if (!text || text.trim().length < 3) {
+    throw new Error('Bitte eine Adresse eingeben.')
+  }
+  const url = `https://nominatim.openstreetmap.org/search?format=json&addressdetails=1&limit=1&accept-language=de&q=${encodeURIComponent(text)}`
+  const res = await fetch(url)
+  if (!res.ok) throw new Error('Adressdienst nicht erreichbar.')
+  const data = await res.json()
+  if (!data || data.length === 0) {
+    throw new Error('Adresse nicht gefunden. Bitte Felder manuell ausfüllen.')
+  }
+  const addr = data[0].address || {}
+  const result = {}
+  const street = addr.road || addr.pedestrian || addr.footway
+  if (street) result.street = street
+  if (addr.house_number) result.house_number = addr.house_number
+  if (addr.postcode) result.postal_code = addr.postcode
+  const city = addr.city || addr.town || addr.village || addr.municipality
+  if (city) result.name = city
+  result.country = addr.country || 'Deutschland'
+  return result
+}
+
+// Eingabefeld, das einen kompletten Adresstext entgegennimmt und per Klick
+// die zerlegten Felder an den Aufrufer zurückgibt.
+function AddressAutoFill({ onParsed }) {
+  const [text, setText] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState(null)
+
+  async function handleParse() {
+    setError(null)
+    setBusy(true)
+    try {
+      const parsed = await parseAddressText(text)
+      onParsed(parsed)
+      setText('')
+    } catch (err) {
+      setError(err.message || 'Adresse konnte nicht erkannt werden.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div style={{ marginBottom: 10 }}>
+      <label>Adresse einfügen (füllt Straße/Hausnr./PLZ/Ort automatisch aus)</label>
+      <div className="row">
+        <input
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          placeholder="z.B. Wünscherstraße 42, 80939 München"
+        />
+        <button type="button" className="secondary" style={{ flex: 'none' }} onClick={handleParse} disabled={busy || !text.trim()}>
+          {busy ? '…' : 'Übernehmen'}
+        </button>
+      </div>
+      {error && <div className="notice error" style={{ marginTop: 6 }}>{error}</div>}
+    </div>
+  )
 }
 
 function AddressFields({ value, onChange, prefix }) {
   return (
     <>
+      <AddressAutoFill onParsed={(parsed) => onChange({ ...value, ...parsed })} />
       <div className="row">
         <div>
           <label>PLZ</label>
@@ -206,7 +294,7 @@ function DriverCarsManager({ token, onCarsChanged }) {
 // Eigene Strecken eines Fahrers: anlegen, Zwischenstopps verwalten,
 // Reihenfolge ändern, Entfernungen berechnen — analog zum Admin-Bereich,
 // aber beschränkt auf die vom Fahrer selbst angelegten Strecken.
-function DriverRoutesManager({ token, onRoutesChanged }) {
+function DriverRoutesManager({ token, onRoutesChanged, driverRate }) {
   const [ownRoutes, setOwnRoutes] = useState([])
   const [routeName, setRouteName] = useState('')
   const [totalPrice, setTotalPrice] = useState('')
@@ -364,14 +452,30 @@ function DriverRoutesManager({ token, onRoutesChanged }) {
       const osrmData = await osrmRes.json()
       if (osrmData.code !== 'Ok' || !osrmData.routes?.[0]) throw new Error('Route konnte nicht berechnet werden.')
       const legs = osrmData.routes[0].legs
+      let totalDistance = 0
       for (let i = 0; i < stops.length; i++) {
         const distanceKm = i < legs.length ? Math.round((legs[i].distance / 1000) * 10) / 10 : null
         const durationMin = i < legs.length ? Math.round(legs[i].duration / 60) : null
+        if (distanceKm != null) totalDistance += distanceKm
         await supabase.rpc('fn_driver_update_stop_distance', {
           p_token: token, p_stop_id: stops[i].id, p_distance_km: distanceKm, p_duration_min: durationMin,
           p_latitude: coords[i].lat, p_longitude: coords[i].lon,
         })
+        if (distanceKm != null && driverRate != null && !stops[i].price_to_next) {
+          const autoPrice = Math.round((driverRate * distanceKm) / 100)
+          await supabase.rpc('fn_driver_update_stop_price', { p_token: token, p_stop_id: stops[i].id, p_price_to_next: autoPrice })
+        }
       }
+
+      if (driverRate != null && !openRoute.total_price) {
+        const newTotal = Math.round((driverRate * totalDistance) / 100)
+        await supabase.rpc('fn_driver_update_route_meta', {
+          p_token: token, p_route_id: openRoute.id, p_name: openRoute.name, p_total_price: newTotal,
+        })
+        setOpenRoute((prev) => ({ ...prev, total_price: newTotal }))
+        setTotalPriceDraft(String(newTotal))
+      }
+
       openRouteDetail(openRoute)
     } catch (err) {
       setDistanceError(err.message || 'Entfernungen konnten nicht berechnet werden.')
@@ -383,7 +487,7 @@ function DriverRoutesManager({ token, onRoutesChanged }) {
   if (openRoute) {
     return (
       <div style={{ marginTop: 12 }}>
-        <button className="secondary" style={{ marginBottom: 12 }} onClick={() => setOpenRoute(null)}>← Zurück zu meinen Strecken</button>
+        <button className="secondary" style={{ marginBottom: 12 }} onClick={() => { setOpenRoute(null); loadOwnRoutes() }}>← Zurück zu meinen Strecken</button>
 
         <label>Streckenname</label>
         <input value={routeNameDraft} onChange={(e) => setRouteNameDraft(e.target.value)} onBlur={saveRouteMeta} />
@@ -416,7 +520,7 @@ function DriverRoutesManager({ token, onRoutesChanged }) {
                 )}
               </div>
 
-              {i > 0 && (
+              {i > 0 && stops.length > 2 && (
                 <div style={{ marginTop: 8 }}>
                   <label style={{ margin: '0 0 2px' }}>Mitfahrbeitrag bis „{s.name}" (EUR)</label>
                   <input type="number" min="0" step="1" defaultValue={stops[i - 1].price_to_next} onBlur={(e) => updatePrice(stops[i - 1], e.target.value)} />
@@ -427,6 +531,7 @@ function DriverRoutesManager({ token, onRoutesChanged }) {
               )}
 
               <label style={{ marginTop: 12 }}>Adresse</label>
+              <AddressAutoFill onParsed={(parsed) => setStops(stops.map((x) => (x.id === s.id ? { ...x, ...parsed } : x)))} />
               <div className="row">
                 <div style={{ flex: 2 }}>
                   <label style={{ marginTop: 0 }}>Straße</label>
@@ -539,6 +644,57 @@ export default function DriverPage() {
 
   const [openTripBookings, setOpenTripBookings] = useState(null)
   const [tripBookings, setTripBookings] = useState([])
+  const [personRatingDrafts, setPersonRatingDrafts] = useState({})
+  const [personRatingBusyId, setPersonRatingBusyId] = useState(null)
+  const [personRatingSavedId, setPersonRatingSavedId] = useState(null)
+
+  useEffect(() => {
+    setPersonRatingDrafts((prev) => {
+      const next = { ...prev }
+      for (const b of tripBookings) {
+        if (!next[b.id]) {
+          next[b.id] = {
+            punctuality: b.rating_punctuality || 0,
+            cleanliness: b.rating_cleanliness || 0,
+            communication: b.rating_communication || 0,
+          }
+        }
+      }
+      return next
+    })
+  }, [tripBookings])
+
+  function personRatingDraftFor(b) {
+    return personRatingDrafts[b.id] || { punctuality: 0, cleanliness: 0, communication: 0 }
+  }
+
+  function updatePersonRatingDraft(bookingId, key, value) {
+    setPersonRatingDrafts((prev) => ({ ...prev, [bookingId]: { ...prev[bookingId], [key]: value } }))
+  }
+
+  async function submitPersonRating(b) {
+    const draft = personRatingDraftFor(b)
+    if (!draft.punctuality || !draft.cleanliness || !draft.communication) {
+      alert('Bitte alle drei Kategorien mit 1-5 Sternen bewerten.')
+      return
+    }
+    setPersonRatingBusyId(b.id)
+    const { data, error: err } = await supabase.rpc('fn_driver_submit_person_rating', {
+      p_token: token,
+      p_booking_id: b.id,
+      p_punctuality: draft.punctuality,
+      p_cleanliness: draft.cleanliness,
+      p_communication: draft.communication,
+    })
+    setPersonRatingBusyId(null)
+    if (err || data?.error) {
+      alert('Bewertung konnte nicht gespeichert werden.')
+      return
+    }
+    setPersonRatingSavedId(b.id)
+    setTimeout(() => setPersonRatingSavedId(null), 1500)
+    showBookings(openTripBookings)
+  }
 
   const [tab, setTab] = useState('trips') // 'trips' | 'routes' | 'cars' | 'settings'
   const [paymentInfo, setPaymentInfo] = useState('')
@@ -690,11 +846,36 @@ export default function DriverPage() {
             <h3>{openTripBookings.route_name}</h3>
             <div className="meta">{formatDate(openTripBookings.trip_date)} · {formatTime(openTripBookings.start_time)} Uhr</div>
             {tripBookings.length === 0 && <div className="empty-state">Noch keine Buchungen.</div>}
-            {tripBookings.map((b) => (
-              <div key={b.id} style={{ padding: '8px 0', borderBottom: '1px solid var(--color-border)' }}>
-                <strong>{b.person_name}</strong> — {b.from_stop} → {b.to_stop} ({b.seats} Platz/Plätze) · EUR {b.price}
-              </div>
-            ))}
+            {tripBookings.map((b) => {
+              const draft = personRatingDraftFor(b)
+              const alreadyRated = b.rating_punctuality != null
+              return (
+                <div key={b.id} style={{ padding: '10px 0', borderBottom: '1px solid var(--color-border)' }}>
+                  <strong>{b.person_name}</strong> — {b.from_stop} → {b.to_stop} ({b.seats} Platz/Plätze) · EUR {b.price}
+                  {b.can_rate && (
+                    <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px dashed var(--color-border)' }}>
+                      <div className="meta" style={{ marginBottom: 8, fontWeight: 600 }}>
+                        {alreadyRated ? 'Deine Bewertung' : 'Mitfahrer bewerten'}
+                      </div>
+                      {PERSON_RATING_CATEGORIES.map((c) => (
+                        <div key={c.key} style={{ marginBottom: 8 }}>
+                          <label style={{ margin: '0 0 4px' }}>{c.label}</label>
+                          <StarInput value={draft[c.key]} onChange={(v) => updatePersonRatingDraft(b.id, c.key, v)} />
+                        </div>
+                      ))}
+                      <button
+                        className="secondary"
+                        style={{ width: '100%', marginTop: 6 }}
+                        disabled={personRatingBusyId === b.id}
+                        onClick={() => submitPersonRating(b)}
+                      >
+                        {personRatingBusyId === b.id ? 'Wird gespeichert …' : personRatingSavedId === b.id ? '✓ Gespeichert' : alreadyRated ? 'Bewertung aktualisieren' : 'Bewertung senden'}
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )
+            })}
           </div>
         </div>
       </>
@@ -719,6 +900,23 @@ export default function DriverPage() {
         {tab === 'settings' && (
           <div className="card">
             <h3>⚙️ Meine Einstellungen</h3>
+            <div style={{ margin: '10px 0', padding: '10px 12px', background: '#f0f2f4', borderRadius: 10 }}>
+              <div className="meta" style={{ marginBottom: 4, fontWeight: 600 }}>Deine Bewertungen</div>
+              {driver?.rating?.count
+                ? (
+                  <>
+                    <div style={{ marginBottom: 4 }}>
+                      <span style={{ color: '#f0a500', fontSize: 16 }}>★</span>{' '}
+                      <strong>{driver.rating.avg_overall}</strong>{' '}
+                      <span className="meta">({driver.rating.count} Bewertung{driver.rating.count === 1 ? '' : 'en'})</span>
+                    </div>
+                    <div className="meta">
+                      Fahrerlebnis {driver.rating.avg_experience} · Pünktlichkeit {driver.rating.avg_punctuality} · Fahrweise {driver.rating.avg_driving} · Sauberkeit {driver.rating.avg_cleanliness} · Kommunikation {driver.rating.avg_communication}
+                    </div>
+                  </>
+                )
+                : <div className="meta">Noch keine Bewertungen.</div>}
+            </div>
             <form onSubmit={saveSettings} style={{ marginTop: 12 }}>
               <label>Mobilnummer</label>
               <input type="tel" value={driverPhone} onChange={(e) => setDriverPhone(e.target.value)} placeholder="z.B. 079 123 45 67" />
@@ -759,7 +957,7 @@ export default function DriverPage() {
 
         {tab === 'routes' && (
           <div className="card">
-            <DriverRoutesManager token={token} onRoutesChanged={loadAll} />
+            <DriverRoutesManager token={token} onRoutesChanged={loadAll} driverRate={driver?.rate_eur_per_100km ?? null} />
           </div>
         )}
 
@@ -810,7 +1008,7 @@ export default function DriverPage() {
             {trips.length === 0 && <div className="empty-state">Noch keine Fahrten veröffentlicht.</div>}
             {trips.map((t) => (
               <div className="card" key={t.id}>
-                <h3>{t.route_name} {t.closed && <span className="badge full">geschlossen</span>}</h3>
+                <h3>{t.route_name}{t.via_stops && ` (via ${t.via_stops})`} {t.closed && <span className="badge full">geschlossen</span>}</h3>
                 <div className="meta">{formatDate(t.trip_date)} · {formatTime(t.start_time)} Uhr</div>
                 {t.car_name && <div className="meta">🚗 {t.car_name}{t.car_notes ? ` (${t.car_notes})` : ''}</div>}
                 <div style={{ margin: '8px 0' }}>

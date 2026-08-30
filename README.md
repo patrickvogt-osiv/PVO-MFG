@@ -57,6 +57,16 @@ normale App nutzbar (Icon auf dem Homescreen), ohne App Store.
   Veröffentlichen einer Fahrt stehen weiterhin **alle** Strecken zur Wahl
   (auch vom Admin oder anderen Fahrern angelegte), bearbeiten/löschen darf
   ein Fahrer aber nur seine eigenen.
+- **Bewertungssystem**: Mitfahrer können jede eigene, bereits stattgefundene
+  Fahrt für den Fahrer bewerten (1-5 Sterne je Kategorie): Fahrerlebnis,
+  Pünktlichkeit am Startpunkt, Fahrweise, Sauberkeit, Kommunikation. Eine
+  Bewertung pro Buchung, nachträglich änderbar. Der Durchschnitt wird
+  angezeigt: Mitfahrern beim Ansehen einer Fahrt, dem Fahrer selbst in seinen
+  Einstellungen, und dem Admin im Tab „Fahrer". Umgekehrt können Fahrer ihre
+  Mitfahrer nach der Fahrt ebenfalls bewerten (1-5 Sterne): Pünktlichkeit am
+  Startpunkt, Sauberkeit, Kommunikation — sichtbar für den Fahrer selbst
+  (beim Bewerten), den Mitfahrer (eigene Einstellungen) und den Admin (Tab
+  „Mitfahrer").
 - **Flexible Datumssuche**: Findet eine Suche mit Datum+Flexibilität eine
   Fahrt an einem abweichenden Tag, erscheint ein Hinweis wie "Diese Fahrt
   findet 2 Tage später statt als gesucht."
@@ -94,6 +104,9 @@ normale App nutzbar (Icon auf dem Homescreen), ohne App Store.
    - `supabase/migration_20_auto_details.sql` (Auto-Größe, Antrieb, Ausstattung)
    - `supabase/migration_21_kartenansicht.sql` (Koordinaten je Stopp für Kartenansicht)
    - `supabase/migration_22_kontaktdaten_einstellungen.sql` (Telefon/E-Mail bei Fahrer- und Mitfahrer-Einstellungen)
+   - `supabase/migration_23_fahrer_via_zwischenstopps.sql` (Zwischenstopps in der eigenen Fahrtenliste des Fahrers)
+   - `supabase/migration_24_bewertungssystem.sql` (Bewertungssystem für Fahrer)
+   - `supabase/migration_25_mitfahrer_bewertungssystem.sql` (Bewertungssystem für Mitfahrer)
 3. Unter **Authentication → Users** einen Benutzer für dich selbst anlegen
    (E-Mail + Passwort) — das ist dein Admin-Login für `/admin`.
 4. Unter **Project Settings → API** findest du:

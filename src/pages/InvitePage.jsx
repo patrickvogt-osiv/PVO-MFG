@@ -108,6 +108,44 @@ function RouteMap({ stops }) {
 }
 
 
+const RATING_CATEGORIES = [
+  { key: 'experience', label: 'Fahrerlebnis' },
+  { key: 'punctuality', label: 'Pünktlichkeit am Startpunkt' },
+  { key: 'driving', label: 'Fahrweise' },
+  { key: 'cleanliness', label: 'Sauberkeit' },
+  { key: 'communication', label: 'Kommunikation' },
+]
+
+function StarInput({ value, onChange }) {
+  return (
+    <div style={{ display: 'flex', gap: 4 }}>
+      {[1, 2, 3, 4, 5].map((n) => (
+        <button
+          key={n}
+          type="button"
+          onClick={() => onChange(n)}
+          style={{ background: 'none', border: 'none', padding: 0, fontSize: 24, lineHeight: 1, cursor: 'pointer', color: n <= value ? '#f0a500' : '#d8dbe0' }}
+        >★</button>
+      ))}
+    </div>
+  )
+}
+
+function StarDisplaySummary({ rating }) {
+  if (!rating || !rating.count) return <div className="meta">Noch keine Bewertungen.</div>
+  return (
+    <div>
+      <div style={{ marginBottom: 4 }}>
+        <span style={{ color: '#f0a500', fontSize: 16 }}>★</span>{' '}
+        <strong>{rating.avg_overall}</strong> <span className="meta">({rating.count} Bewertung{rating.count === 1 ? '' : 'en'})</span>
+      </div>
+      <div className="meta">
+        {RATING_CATEGORIES.map((c) => `${c.label}: ${rating['avg_' + c.key]}`).join(' · ')}
+      </div>
+    </div>
+  )
+}
+
 function formatAddress(s) {
   if (!s) return ''
   const line1 = [s.postal_code, s.name].filter(Boolean).join(' ')
@@ -186,6 +224,62 @@ export default function InvitePage() {
   const [streckenverlaufOpen, setStreckenverlaufOpen] = useState(false)
 
   const [settingsPhone, setSettingsPhone] = useState('')
+  const [ratingDrafts, setRatingDrafts] = useState({}) // { [bookingId]: { experience, punctuality, driving, cleanliness, communication } }
+  const [ratingBusyId, setRatingBusyId] = useState(null)
+  const [ratingSavedId, setRatingSavedId] = useState(null)
+
+  useEffect(() => {
+    setRatingDrafts((prev) => {
+      const next = { ...prev }
+      for (const b of myBookings) {
+        if (!next[b.id]) {
+          next[b.id] = {
+            experience: b.rating_experience || 0,
+            punctuality: b.rating_punctuality || 0,
+            driving: b.rating_driving || 0,
+            cleanliness: b.rating_cleanliness || 0,
+            communication: b.rating_communication || 0,
+          }
+        }
+      }
+      return next
+    })
+  }, [myBookings])
+
+  function ratingDraftFor(b) {
+    return ratingDrafts[b.id] || { experience: 0, punctuality: 0, driving: 0, cleanliness: 0, communication: 0 }
+  }
+
+  function updateRatingDraft(bookingId, key, value) {
+    setRatingDrafts((prev) => ({ ...prev, [bookingId]: { ...prev[bookingId], [key]: value } }))
+  }
+
+  async function submitRating(b) {
+    const draft = ratingDraftFor(b)
+    if (!draft.experience || !draft.punctuality || !draft.driving || !draft.cleanliness || !draft.communication) {
+      alert('Bitte alle fünf Kategorien mit 1-5 Sternen bewerten.')
+      return
+    }
+    setRatingBusyId(b.id)
+    const { data, error: err } = await supabase.rpc('fn_submit_rating', {
+      p_token: token,
+      p_booking_id: b.id,
+      p_experience: draft.experience,
+      p_punctuality: draft.punctuality,
+      p_driving: draft.driving,
+      p_cleanliness: draft.cleanliness,
+      p_communication: draft.communication,
+    })
+    setRatingBusyId(null)
+    if (err || data?.error) {
+      alert('Bewertung konnte nicht gespeichert werden.')
+      return
+    }
+    setRatingSavedId(b.id)
+    setTimeout(() => setRatingSavedId(null), 1500)
+    loadMyBookings()
+  }
+
   const [settingsEmail, setSettingsEmail] = useState('')
   const [settingsMsg, setSettingsMsg] = useState(null)
   const [settingsBusy, setSettingsBusy] = useState(false)
@@ -853,8 +947,15 @@ export default function InvitePage() {
               </div>
             )}
 
+            <div style={{ marginTop: 10, padding: '10px 12px', background: '#f0f2f4', borderRadius: 10 }}>
+              <div className="meta" style={{ marginBottom: 4, fontWeight: 600 }}>Bewertungen des Fahrers</div>
+              <StarDisplaySummary rating={tripDetails.driver_rating} />
+            </div>
+
             <details style={{ marginTop: 10 }} onToggle={(e) => setStreckenverlaufOpen(e.target.open)}>
-              <summary style={{ cursor: 'pointer', fontSize: 13, color: 'var(--color-muted)' }}>Streckenverlauf & Adressen anzeigen</summary>
+              <summary style={{ fontSize: 13, color: 'var(--color-muted)', fontWeight: 600 }}>
+                <span className="summary-chevron">▶</span> Streckenverlauf & Adressen anzeigen
+              </summary>
               {streckenverlaufOpen && (
                 <>
                   <div style={{ marginTop: 8 }}>
@@ -996,6 +1097,32 @@ export default function InvitePage() {
                   )}
                   <div className="meta">Mitfahrbeitrag: EUR {b.price}</div>
                   <button className="danger" onClick={() => cancelBooking(b.id)}>Stornieren</button>
+
+                  {b.can_rate && (() => {
+                    const draft = ratingDraftFor(b)
+                    const alreadyRated = b.rating_experience != null
+                    return (
+                      <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid var(--color-border)' }}>
+                        <div className="meta" style={{ marginBottom: 8, fontWeight: 600 }}>
+                          {alreadyRated ? 'Deine Bewertung' : 'Fahrer bewerten'}
+                        </div>
+                        {RATING_CATEGORIES.map((c) => (
+                          <div key={c.key} style={{ marginBottom: 8 }}>
+                            <label style={{ margin: '0 0 4px' }}>{c.label}</label>
+                            <StarInput value={draft[c.key]} onChange={(v) => updateRatingDraft(b.id, c.key, v)} />
+                          </div>
+                        ))}
+                        <button
+                          className="secondary"
+                          style={{ width: '100%', marginTop: 6 }}
+                          disabled={ratingBusyId === b.id}
+                          onClick={() => submitRating(b)}
+                        >
+                          {ratingBusyId === b.id ? 'Wird gespeichert …' : ratingSavedId === b.id ? '✓ Gespeichert' : alreadyRated ? 'Bewertung aktualisieren' : 'Bewertung senden'}
+                        </button>
+                      </div>
+                    )
+                  })()}
                 </div>
               )
             })}
@@ -1005,6 +1132,23 @@ export default function InvitePage() {
         {tab === 'settings' && (
           <div className="card">
             <h3>⚙️ Meine Einstellungen</h3>
+            <div style={{ margin: '10px 0', padding: '10px 12px', background: '#f0f2f4', borderRadius: 10 }}>
+              <div className="meta" style={{ marginBottom: 4, fontWeight: 600 }}>Deine Bewertungen</div>
+              {person?.rating?.count
+                ? (
+                  <>
+                    <div style={{ marginBottom: 4 }}>
+                      <span style={{ color: '#f0a500', fontSize: 16 }}>★</span>{' '}
+                      <strong>{person.rating.avg_overall}</strong>{' '}
+                      <span className="meta">({person.rating.count} Bewertung{person.rating.count === 1 ? '' : 'en'})</span>
+                    </div>
+                    <div className="meta">
+                      Pünktlichkeit {person.rating.avg_punctuality} · Sauberkeit {person.rating.avg_cleanliness} · Kommunikation {person.rating.avg_communication}
+                    </div>
+                  </>
+                )
+                : <div className="meta">Noch keine Bewertungen.</div>}
+            </div>
             <form onSubmit={saveProfileSettings} style={{ marginTop: 12 }}>
               <label>Mobilnummer</label>
               <input type="tel" value={settingsPhone} onChange={(e) => setSettingsPhone(e.target.value)} placeholder="z.B. 079 123 45 67" />

@@ -44,10 +44,35 @@ function PeopleTab() {
   const [people, setPeople] = useState([])
   const [name, setName] = useState('')
   const [copiedId, setCopiedId] = useState(null)
+  const [ratingsByPerson, setRatingsByPerson] = useState({})
 
   const load = useCallback(async () => {
     const { data } = await supabase.from('people').select('*').order('created_at', { ascending: false })
     setPeople(data || [])
+
+    const { data: ratings } = await supabase
+      .from('person_ratings')
+      .select('person_id, rating_punctuality, rating_cleanliness, rating_communication')
+    const grouped = {}
+    for (const r of ratings || []) {
+      if (!grouped[r.person_id]) grouped[r.person_id] = []
+      grouped[r.person_id].push(r)
+    }
+    const summaries = {}
+    for (const [personId, rows] of Object.entries(grouped)) {
+      const avg = (field) => Math.round((rows.reduce((sum, r) => sum + r[field], 0) / rows.length) * 10) / 10
+      const overall = Math.round(
+        (rows.reduce((sum, r) => sum + (r.rating_punctuality + r.rating_cleanliness + r.rating_communication) / 3, 0) / rows.length) * 10
+      ) / 10
+      summaries[personId] = {
+        count: rows.length,
+        avg_punctuality: avg('rating_punctuality'),
+        avg_cleanliness: avg('rating_cleanliness'),
+        avg_communication: avg('rating_communication'),
+        avg_overall: overall,
+      }
+    }
+    setRatingsByPerson(summaries)
   }, [])
 
   useEffect(() => { load() }, [load])
@@ -92,6 +117,11 @@ function PeopleTab() {
           {(p.phone || p.email) && (
             <div className="meta">{[p.phone, p.email].filter(Boolean).join(' · ')}</div>
           )}
+          <div className="meta" style={{ marginTop: 4 }}>
+            {ratingsByPerson[p.id]
+              ? `⭐ ${ratingsByPerson[p.id].avg_overall} (${ratingsByPerson[p.id].count} Bewertung${ratingsByPerson[p.id].count === 1 ? '' : 'en'}) — Pünktlichkeit ${ratingsByPerson[p.id].avg_punctuality} · Sauberkeit ${ratingsByPerson[p.id].avg_cleanliness} · Kommunikation ${ratingsByPerson[p.id].avg_communication}`
+              : 'Noch keine Bewertungen.'}
+          </div>
           <div className="link-box">
             <span style={{ flex: 1 }}>{inviteLink(p.invite_token)}</span>
             <button className="secondary" style={{ padding: '4px 8px' }} onClick={() => copyLink(p)}>
@@ -123,9 +153,76 @@ function formatAddress(s) {
   return [line1, line2, s.country].filter(Boolean).join(', ')
 }
 
+// Zerlegt einen frei eingegebenen Adresstext (z.B. "Wünscherstraße 42, 80939
+// München") über OpenStreetMap (Nominatim, kostenlos, kein Key) in Straße,
+// Hausnummer, PLZ und Ort. Land bekommt "Deutschland" als Standardwert, falls
+// keines erkannt wird.
+async function parseAddressText(text) {
+  if (!text || text.trim().length < 3) {
+    throw new Error('Bitte eine Adresse eingeben.')
+  }
+  const url = `https://nominatim.openstreetmap.org/search?format=json&addressdetails=1&limit=1&accept-language=de&q=${encodeURIComponent(text)}`
+  const res = await fetch(url)
+  if (!res.ok) throw new Error('Adressdienst nicht erreichbar.')
+  const data = await res.json()
+  if (!data || data.length === 0) {
+    throw new Error('Adresse nicht gefunden. Bitte Felder manuell ausfüllen.')
+  }
+  const addr = data[0].address || {}
+  const result = {}
+  const street = addr.road || addr.pedestrian || addr.footway
+  if (street) result.street = street
+  if (addr.house_number) result.house_number = addr.house_number
+  if (addr.postcode) result.postal_code = addr.postcode
+  const city = addr.city || addr.town || addr.village || addr.municipality
+  if (city) result.name = city
+  result.country = addr.country || 'Deutschland'
+  return result
+}
+
+// Eingabefeld, das einen kompletten Adresstext entgegennimmt und per Klick
+// die zerlegten Felder an den Aufrufer zurückgibt.
+function AddressAutoFill({ onParsed }) {
+  const [text, setText] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState(null)
+
+  async function handleParse() {
+    setError(null)
+    setBusy(true)
+    try {
+      const parsed = await parseAddressText(text)
+      onParsed(parsed)
+      setText('')
+    } catch (err) {
+      setError(err.message || 'Adresse konnte nicht erkannt werden.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div style={{ marginBottom: 10 }}>
+      <label>Adresse einfügen (füllt Straße/Hausnr./PLZ/Ort automatisch aus)</label>
+      <div className="row">
+        <input
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          placeholder="z.B. Wünscherstraße 42, 80939 München"
+        />
+        <button type="button" className="secondary" style={{ flex: 'none' }} onClick={handleParse} disabled={busy || !text.trim()}>
+          {busy ? '…' : 'Übernehmen'}
+        </button>
+      </div>
+      {error && <div className="notice error" style={{ marginTop: 6 }}>{error}</div>}
+    </div>
+  )
+}
+
 function AddressFields({ value, onChange, prefix }) {
   return (
     <>
+      <AddressAutoFill onParsed={(parsed) => onChange({ ...value, ...parsed })} />
       <div className="row">
         <div>
           <label>PLZ</label>
@@ -167,6 +264,7 @@ function DriversTab() {
   const [copiedId, setCopiedId] = useState(null)
   const [drafts, setDrafts] = useState({}) // { [driverId]: { payment_info, reference_currency, rate_eur_per_100km } }
   const [savedId, setSavedId] = useState(null)
+  const [ratingsByDriver, setRatingsByDriver] = useState({})
 
   const load = useCallback(async () => {
     const { data } = await supabase.from('drivers').select('*').order('created_at', { ascending: false })
@@ -180,6 +278,32 @@ function DriversTab() {
       }
     }
     setDrafts(nextDrafts)
+
+    const { data: ratings } = await supabase
+      .from('driver_ratings')
+      .select('driver_id, rating_experience, rating_punctuality, rating_driving, rating_cleanliness, rating_communication')
+    const grouped = {}
+    for (const r of ratings || []) {
+      if (!grouped[r.driver_id]) grouped[r.driver_id] = []
+      grouped[r.driver_id].push(r)
+    }
+    const summaries = {}
+    for (const [driverId, rows] of Object.entries(grouped)) {
+      const avg = (field) => Math.round((rows.reduce((sum, r) => sum + r[field], 0) / rows.length) * 10) / 10
+      const overall = Math.round(
+        (rows.reduce((sum, r) => sum + (r.rating_experience + r.rating_punctuality + r.rating_driving + r.rating_cleanliness + r.rating_communication) / 5, 0) / rows.length) * 10
+      ) / 10
+      summaries[driverId] = {
+        count: rows.length,
+        avg_experience: avg('rating_experience'),
+        avg_punctuality: avg('rating_punctuality'),
+        avg_driving: avg('rating_driving'),
+        avg_cleanliness: avg('rating_cleanliness'),
+        avg_communication: avg('rating_communication'),
+        avg_overall: overall,
+      }
+    }
+    setRatingsByDriver(summaries)
   }, [])
 
   useEffect(() => { load() }, [load])
@@ -248,6 +372,11 @@ function DriversTab() {
             {(d.phone || d.email) && (
               <div className="meta">{[d.phone, d.email].filter(Boolean).join(' · ')}</div>
             )}
+            <div className="meta" style={{ marginTop: 4 }}>
+              {ratingsByDriver[d.id]
+                ? `⭐ ${ratingsByDriver[d.id].avg_overall} (${ratingsByDriver[d.id].count} Bewertung${ratingsByDriver[d.id].count === 1 ? '' : 'en'}) — Fahrerlebnis ${ratingsByDriver[d.id].avg_experience} · Pünktlichkeit ${ratingsByDriver[d.id].avg_punctuality} · Fahrweise ${ratingsByDriver[d.id].avg_driving} · Sauberkeit ${ratingsByDriver[d.id].avg_cleanliness} · Kommunikation ${ratingsByDriver[d.id].avg_communication}`
+                : 'Noch keine Bewertungen.'}
+            </div>
             <div className="link-box">
               <span style={{ flex: 1 }}>{inviteLink(d.invite_token)}</span>
               <button className="secondary" style={{ padding: '4px 8px' }} onClick={() => copyLink(d)}>
@@ -318,6 +447,7 @@ function RoutesTab() {
   const [comparisonDrivers, setComparisonDrivers] = useState([])
   const [comparisonDriverId, setComparisonDriverId] = useState('')
   const [comparisonRate, setComparisonRate] = useState(null)
+  const [driverRatesById, setDriverRatesById] = useState({})
 
   const comparisonDriver = comparisonDrivers.find((d) => d.id === comparisonDriverId)
   const comparisonCurrency = comparisonDriver?.reference_currency
@@ -325,6 +455,11 @@ function RoutesTab() {
   useEffect(() => {
     supabase.from('drivers').select('id, name, reference_currency').order('name').then(({ data }) => {
       setComparisonDrivers((data || []).filter((d) => d.reference_currency))
+    })
+    supabase.from('drivers').select('id, rate_eur_per_100km').then(({ data }) => {
+      const map = {}
+      for (const d of data || []) map[d.id] = d.rate_eur_per_100km
+      setDriverRatesById(map)
     })
   }, [])
 
@@ -542,17 +677,37 @@ function RoutesTab() {
       }
       const legs = osrmData.routes[0].legs
 
+      // Fahrer-Rate ermitteln: bevorzugt die des Streckenbesitzers, sonst
+      // ersatzweise die aktuell gewählte Vergleichsfahrer-Rate.
+      const effectiveDriverId = openRoute.driver_id || comparisonDriverId || null
+      const rate = effectiveDriverId != null ? driverRatesById[effectiveDriverId] : null
+
       // Koordinaten für ALLE Stopps speichern (auch den letzten, der keine
       // eigene "Distanz bis nächster Stopp" hat), damit die Kartenansicht
-      // für Mitfahrer vollständig ist.
+      // für Mitfahrer vollständig ist. Ist ein Mitfahrbeitrag noch 0 und eine
+      // Fahrer-Rate (EUR/100km) bekannt, wird er automatisch daraus befüllt.
+      let totalDistance = 0
       for (let i = 0; i < stops.length; i++) {
         const patch = { latitude: coords[i].lat, longitude: coords[i].lon }
         if (i < legs.length) {
-          patch.distance_to_next_km = Math.round((legs[i].distance / 1000) * 10) / 10
+          const distanceKm = Math.round((legs[i].distance / 1000) * 10) / 10
+          patch.distance_to_next_km = distanceKm
           patch.duration_to_next_min = Math.round(legs[i].duration / 60)
+          totalDistance += distanceKm
+          if (rate != null && !stops[i].price_to_next) {
+            patch.price_to_next = Math.round((rate * distanceKm) / 100)
+          }
         }
         await supabase.from('route_stops').update(patch).eq('id', stops[i].id)
       }
+
+      if (rate != null && !openRoute.total_price) {
+        const newTotal = Math.round((rate * totalDistance) / 100)
+        await supabase.from('routes').update({ total_price: newTotal }).eq('id', openRoute.id)
+        setOpenRoute((prev) => ({ ...prev, total_price: newTotal }))
+        setTotalPriceDraft(String(newTotal))
+      }
+
       openRouteDetail(openRoute)
     } catch (err) {
       setDistanceError(err.message || 'Entfernungen konnten nicht berechnet werden.')
@@ -564,7 +719,7 @@ function RoutesTab() {
   if (openRoute) {
     return (
       <div className="card">
-        <button className="secondary" style={{ marginBottom: 12 }} onClick={() => setOpenRoute(null)}>← Zurück</button>
+        <button className="secondary" style={{ marginBottom: 12 }} onClick={() => { setOpenRoute(null); loadRoutes() }}>← Zurück</button>
 
         <label>Streckenname</label>
         <input value={routeNameDraft} onChange={(e) => setRouteNameDraft(e.target.value)} onBlur={saveRouteMeta} />
@@ -652,7 +807,7 @@ function RoutesTab() {
                 )}
               </div>
 
-              {i > 0 && (
+              {i > 0 && stops.length > 2 && (
                 <div style={{ marginTop: 8 }}>
                   <label style={{ margin: '0 0 2px' }}>Mitfahrbeitrag bis „{s.name}" (EUR)</label>
                   <input
@@ -676,6 +831,7 @@ function RoutesTab() {
               )}
 
               <label style={{ marginTop: 12 }}>Adresse</label>
+              <AddressAutoFill onParsed={(parsed) => setStops(stops.map((x) => (x.id === s.id ? { ...x, ...parsed } : x)))} />
               <div className="row">
                 <div style={{ flex: 2 }}>
                   <label style={{ marginTop: 0 }}>Straße</label>

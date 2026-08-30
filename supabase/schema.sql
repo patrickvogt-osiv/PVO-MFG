@@ -130,6 +130,36 @@ create table bookings (
 create index on bookings (trip_id) where not cancelled;
 create index on bookings (person_id) where not cancelled;
 
+-- Bewertungen: Mitfahrer bewerten Fahrer je Buchung (eine Bewertung pro
+-- Buchung, nachträglich änderbar), je 1-5 Sterne in fünf Kategorien.
+create table driver_ratings (
+  id                     uuid primary key default gen_random_uuid(),
+  booking_id             uuid not null unique references bookings(id) on delete cascade,
+  driver_id              uuid not null references drivers(id) on delete cascade,
+  person_id              uuid not null references people(id) on delete cascade,
+  rating_experience      integer not null check (rating_experience between 1 and 5),
+  rating_punctuality     integer not null check (rating_punctuality between 1 and 5),
+  rating_driving         integer not null check (rating_driving between 1 and 5),
+  rating_cleanliness     integer not null check (rating_cleanliness between 1 and 5),
+  rating_communication   integer not null check (rating_communication between 1 and 5),
+  created_at             timestamptz not null default now(),
+  updated_at             timestamptz not null default now()
+);
+
+-- Bewertungen: Fahrer bewerten Mitfahrer je Buchung, je 1-5 Sterne in drei
+-- Kategorien.
+create table person_ratings (
+  id                    uuid primary key default gen_random_uuid(),
+  booking_id            uuid not null unique references bookings(id) on delete cascade,
+  person_id             uuid not null references people(id) on delete cascade,
+  driver_id             uuid not null references drivers(id) on delete cascade,
+  rating_punctuality    integer not null check (rating_punctuality between 1 and 5),
+  rating_cleanliness    integer not null check (rating_cleanliness between 1 and 5),
+  rating_communication  integer not null check (rating_communication between 1 and 5),
+  created_at            timestamptz not null default now(),
+  updated_at            timestamptz not null default now()
+);
+
 -- ----------------------------------------------------------------------------
 -- Row Level Security
 -- ----------------------------------------------------------------------------
@@ -147,6 +177,8 @@ alter table routes       enable row level security;
 alter table route_stops  enable row level security;
 alter table trips        enable row level security;
 alter table bookings     enable row level security;
+alter table driver_ratings enable row level security;
+alter table person_ratings enable row level security;
 
 create policy "admin full access" on people
   for all using (auth.role() = 'authenticated') with check (auth.role() = 'authenticated');
@@ -162,9 +194,13 @@ create policy "admin full access" on trips
   for all using (auth.role() = 'authenticated') with check (auth.role() = 'authenticated');
 create policy "admin full access" on bookings
   for all using (auth.role() = 'authenticated') with check (auth.role() = 'authenticated');
+create policy "admin full access" on driver_ratings
+  for all using (auth.role() = 'authenticated') with check (auth.role() = 'authenticated');
+create policy "admin full access" on person_ratings
+  for all using (auth.role() = 'authenticated') with check (auth.role() = 'authenticated');
 
 -- Kein direkter Zugriff für anon über die Tabellen selbst
-revoke all on people, cars, drivers, routes, route_stops, trips, bookings from anon;
+revoke all on people, cars, drivers, routes, route_stops, trips, bookings, driver_ratings, person_ratings from anon;
 
 -- ----------------------------------------------------------------------------
 -- RPC-Funktionen für eingeladene Mitfahrer (aufgerufen mit dem anon-Key)
@@ -180,6 +216,7 @@ as $$
 declare
   v_person people%rowtype;
   v_trips  json;
+  v_rating json;
 begin
   select * into v_person from people where invite_token = p_token and not revoked;
   if not found then
@@ -242,8 +279,18 @@ begin
     order by tr.trip_date, tr.start_time
   ) t;
 
+  select json_build_object(
+    'count', count(*),
+    'avg_punctuality', round(avg(rating_punctuality)::numeric, 1),
+    'avg_cleanliness', round(avg(rating_cleanliness)::numeric, 1),
+    'avg_communication', round(avg(rating_communication)::numeric, 1),
+    'avg_overall', round(avg((rating_punctuality + rating_cleanliness + rating_communication) / 3.0)::numeric, 1)
+  )
+  into v_rating
+  from person_ratings where person_id = v_person.id;
+
   return json_build_object(
-    'person', json_build_object('id', v_person.id, 'name', v_person.name, 'phone', v_person.phone, 'email', v_person.email),
+    'person', json_build_object('id', v_person.id, 'name', v_person.name, 'phone', v_person.phone, 'email', v_person.email, 'rating', v_rating),
     'trips', v_trips
   );
 end;
@@ -264,19 +311,21 @@ declare
   v_car_name        text;
   v_car_notes       text;
   v_closed          boolean;
+  v_driver_id       uuid;
   v_driver_payment  text;
   v_max_order       int;
   v_route_price     int;
   v_stops           json;
   v_usage           json;
+  v_rating          json;
 begin
   select * into v_person from people where invite_token = p_token and not revoked;
   if not found then
     return json_build_object('error', 'invalid_token');
   end if;
 
-  select tr.route_id, tr.total_seats, c.name, c.notes, tr.closed, d.payment_info
-    into v_route_id, v_total, v_car_name, v_car_notes, v_closed, v_driver_payment
+  select tr.route_id, tr.total_seats, c.name, c.notes, tr.closed, tr.driver_id, d.payment_info
+    into v_route_id, v_total, v_car_name, v_car_notes, v_closed, v_driver_id, v_driver_payment
   from trips tr
   left join cars c on c.id = tr.car_id
   left join drivers d on d.id = tr.driver_id
@@ -322,12 +371,25 @@ begin
     group by rs.order_index, rs.price_to_next, rs.distance_to_next_km, rs.duration_to_next_min
   ) seg;
 
+  select json_build_object(
+    'count', count(*),
+    'avg_experience', round(avg(rating_experience)::numeric, 1),
+    'avg_punctuality', round(avg(rating_punctuality)::numeric, 1),
+    'avg_driving', round(avg(rating_driving)::numeric, 1),
+    'avg_cleanliness', round(avg(rating_cleanliness)::numeric, 1),
+    'avg_communication', round(avg(rating_communication)::numeric, 1),
+    'avg_overall', round(avg((rating_experience + rating_punctuality + rating_driving + rating_cleanliness + rating_communication) / 5.0)::numeric, 1)
+  )
+  into v_rating
+  from driver_ratings where driver_id = v_driver_id;
+
   return json_build_object(
     'total_seats', v_total,
     'car_name', v_car_name,
     'car_notes', v_car_notes,
     'closed', v_closed,
     'driver_payment_info', v_driver_payment,
+    'driver_rating', v_rating,
     'stops', v_stops,
     'segment_usage', v_usage,
     'route_total_price', v_route_price,
@@ -451,6 +513,9 @@ begin
            r.name as route_name,
            c.name as car_name, c.notes as car_notes,
            fs.name as from_stop, ts.name as to_stop,
+           (tr.trip_date <= current_date and tr.driver_id is not null) as can_rate,
+           dr.rating_experience, dr.rating_punctuality, dr.rating_driving,
+           dr.rating_cleanliness, dr.rating_communication,
            (
              select case when count(*) = count(distance_to_next_km)
                      then round(coalesce(sum(distance_to_next_km), 0)::numeric, 1)
@@ -482,6 +547,7 @@ begin
     left join cars c on c.id = tr.car_id
     join route_stops fs on fs.id = bk.from_stop_id
     join route_stops ts on ts.id = bk.to_stop_id
+    left join driver_ratings dr on dr.booking_id = bk.id
     where bk.person_id = v_person.id and not bk.cancelled
   ) b;
 
@@ -602,6 +668,7 @@ as $$
 declare
   v_driver drivers%rowtype;
   v_trips  json;
+  v_rating json;
 begin
   select * into v_driver from drivers where invite_token = p_token and not revoked;
   if not found then
@@ -612,12 +679,31 @@ begin
   from (
     select tr.id, tr.trip_date, tr.start_time, tr.total_seats, tr.closed,
            r.name as route_name, c.name as car_name, c.notes as car_notes,
-           coalesce((select sum(b.seats) from bookings b where b.trip_id = tr.id and not b.cancelled), 0) as seats_booked
+           coalesce((select sum(b.seats) from bookings b where b.trip_id = tr.id and not b.cancelled), 0) as seats_booked,
+           (
+             select string_agg(rs.name, ', ' order by rs.order_index)
+             from route_stops rs
+             where rs.route_id = tr.route_id
+               and rs.order_index > 0
+               and rs.order_index < (select max(order_index) from route_stops where route_id = tr.route_id)
+           ) as via_stops
     from trips tr
     join routes r on r.id = tr.route_id
     left join cars c on c.id = tr.car_id
     where tr.driver_id = v_driver.id
   ) t;
+
+  select json_build_object(
+    'count', count(*),
+    'avg_experience', round(avg(rating_experience)::numeric, 1),
+    'avg_punctuality', round(avg(rating_punctuality)::numeric, 1),
+    'avg_driving', round(avg(rating_driving)::numeric, 1),
+    'avg_cleanliness', round(avg(rating_cleanliness)::numeric, 1),
+    'avg_communication', round(avg(rating_communication)::numeric, 1),
+    'avg_overall', round(avg((rating_experience + rating_punctuality + rating_driving + rating_cleanliness + rating_communication) / 5.0)::numeric, 1)
+  )
+  into v_rating
+  from driver_ratings where driver_id = v_driver.id;
 
   return json_build_object(
     'driver', json_build_object(
@@ -625,7 +711,8 @@ begin
       'phone', v_driver.phone, 'email', v_driver.email,
       'payment_info', v_driver.payment_info,
       'reference_currency', v_driver.reference_currency,
-      'rate_eur_per_100km', v_driver.rate_eur_per_100km
+      'rate_eur_per_100km', v_driver.rate_eur_per_100km,
+      'rating', v_rating
     ),
     'trips', v_trips
   );
@@ -726,11 +813,15 @@ begin
   from (
     select bk.id, bk.seats, bk.price,
            p.name as person_name,
-           fs.name as from_stop, ts.name as to_stop
+           fs.name as from_stop, ts.name as to_stop,
+           (tr.trip_date <= current_date) as can_rate,
+           pr.rating_punctuality, pr.rating_cleanliness, pr.rating_communication
     from bookings bk
+    join trips tr on tr.id = bk.trip_id
     join people p on p.id = bk.person_id
     join route_stops fs on fs.id = bk.from_stop_id
     join route_stops ts on ts.id = bk.to_stop_id
+    left join person_ratings pr on pr.booking_id = bk.id
     where bk.trip_id = p_trip_id and not bk.cancelled
   ) b;
 
@@ -1476,3 +1567,139 @@ end;
 $$;
 
 grant execute on function fn_person_update_profile(text, text, text) to anon;
+
+-- ----------------------------------------------------------------------------
+-- Mitfahrer: Bewertung für den Fahrer einer eigenen, bereits stattgefundenen,
+-- nicht stornierten Buchung abgeben oder aktualisieren
+-- ----------------------------------------------------------------------------
+create or replace function fn_submit_rating(
+  p_token          text,
+  p_booking_id     uuid,
+  p_experience     integer,
+  p_punctuality    integer,
+  p_driving        integer,
+  p_cleanliness    integer,
+  p_communication  integer
+)
+returns json
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_person     people%rowtype;
+  v_person_id  uuid;
+  v_trip_date  date;
+  v_driver_id  uuid;
+begin
+  select * into v_person from people where invite_token = p_token and not revoked;
+  if not found then
+    return json_build_object('error', 'invalid_token');
+  end if;
+
+  select bk.person_id, tr.trip_date, tr.driver_id
+    into v_person_id, v_trip_date, v_driver_id
+  from bookings bk
+  join trips tr on tr.id = bk.trip_id
+  where bk.id = p_booking_id and not bk.cancelled;
+
+  if not found then
+    return json_build_object('error', 'booking_not_found');
+  end if;
+  if v_person_id <> v_person.id then
+    return json_build_object('error', 'not_your_booking');
+  end if;
+  if v_trip_date > current_date then
+    return json_build_object('error', 'trip_not_completed');
+  end if;
+  if v_driver_id is null then
+    return json_build_object('error', 'no_driver');
+  end if;
+  if p_experience not between 1 and 5 or p_punctuality not between 1 and 5
+     or p_driving not between 1 and 5 or p_cleanliness not between 1 and 5
+     or p_communication not between 1 and 5 then
+    return json_build_object('error', 'invalid_rating');
+  end if;
+
+  insert into driver_ratings (
+    booking_id, driver_id, person_id,
+    rating_experience, rating_punctuality, rating_driving, rating_cleanliness, rating_communication
+  )
+  values (
+    p_booking_id, v_driver_id, v_person.id,
+    p_experience, p_punctuality, p_driving, p_cleanliness, p_communication
+  )
+  on conflict (booking_id) do update set
+    rating_experience = excluded.rating_experience,
+    rating_punctuality = excluded.rating_punctuality,
+    rating_driving = excluded.rating_driving,
+    rating_cleanliness = excluded.rating_cleanliness,
+    rating_communication = excluded.rating_communication,
+    updated_at = now();
+
+  return json_build_object('success', true);
+end;
+$$;
+
+grant execute on function fn_submit_rating(text, uuid, integer, integer, integer, integer, integer) to anon;
+
+-- ----------------------------------------------------------------------------
+-- Fahrer: Mitfahrer einer eigenen, bereits stattgefundenen Buchung bewerten
+-- oder die Bewertung aktualisieren
+-- ----------------------------------------------------------------------------
+create or replace function fn_driver_submit_person_rating(
+  p_token          text,
+  p_booking_id     uuid,
+  p_punctuality    integer,
+  p_cleanliness    integer,
+  p_communication  integer
+)
+returns json
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_driver     drivers%rowtype;
+  v_trip_driver uuid;
+  v_trip_date  date;
+  v_person_id  uuid;
+begin
+  select * into v_driver from drivers where invite_token = p_token and not revoked;
+  if not found then
+    return json_build_object('error', 'invalid_token');
+  end if;
+
+  select tr.driver_id, tr.trip_date, bk.person_id
+    into v_trip_driver, v_trip_date, v_person_id
+  from bookings bk
+  join trips tr on tr.id = bk.trip_id
+  where bk.id = p_booking_id and not bk.cancelled;
+
+  if not found then
+    return json_build_object('error', 'booking_not_found');
+  end if;
+  if v_trip_driver is null or v_trip_driver <> v_driver.id then
+    return json_build_object('error', 'not_your_trip');
+  end if;
+  if v_trip_date > current_date then
+    return json_build_object('error', 'trip_not_completed');
+  end if;
+  if p_punctuality not between 1 and 5 or p_cleanliness not between 1 and 5
+     or p_communication not between 1 and 5 then
+    return json_build_object('error', 'invalid_rating');
+  end if;
+
+  insert into person_ratings (booking_id, person_id, driver_id, rating_punctuality, rating_cleanliness, rating_communication)
+  values (p_booking_id, v_person_id, v_driver.id, p_punctuality, p_cleanliness, p_communication)
+  on conflict (booking_id) do update set
+    rating_punctuality = excluded.rating_punctuality,
+    rating_cleanliness = excluded.rating_cleanliness,
+    rating_communication = excluded.rating_communication,
+    updated_at = now();
+
+  return json_build_object('success', true);
+end;
+$$;
+
+grant execute on function fn_driver_submit_person_rating(text, uuid, integer, integer, integer) to anon;
