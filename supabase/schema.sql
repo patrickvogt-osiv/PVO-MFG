@@ -2042,3 +2042,43 @@ end;
 $$;
 
 grant execute on function fn_delete_search_alert(text, uuid) to anon;
+
+-- Willkommenstext auf der Landing-Seite (admin-editierbar über app_settings)
+insert into app_settings (key, value) values (
+  'welcome_text_intro',
+$welcome$Du möchtest einfach eine Mitfahrgelegenheit buchen? Oder als Fahrer deine freien Plätze anbieten, um Fahrtkosten zu teilen und neue Leute kennenzulernen? Dann bist du hier genau richtig!
+
+Schön, dass du da bist — gute Fahrt!$welcome$
+) on conflict (key) do nothing;
+
+insert into app_settings (key, value) values (
+  'welcome_text_details',
+$welcome$Ich habe diese Plattform ins Leben gerufen, um eine schlanke, preiswerte und unkomplizierte Alternative zu den grossen Anbietern zu schaffen. Für Mitfahrer ist die Nutzung komplett gebührenfrei. Ganz umsonst lässt sich ein solches Projekt im Hintergrund aber leider nicht betreiben.
+
+Damit die Webseite rund um die Uhr sicher online bleibt, fallen laufende Kosten an — zum Beispiel für die Domain, das Webhosting, verschlüsselte SSL-Zertifikate, den automatischen E-Mail-Versand (Buchungsbestätigungen) sowie für Rechtstexte und die Transaktionsgebühren der Zahlungsanbieter.
+
+Um diese Ausgaben fair zu decken, setzen wir auf ein einfaches Unterstützer-Modell:
+
+- Als Fahrer schliesst du für lediglich 1 € pro Monat ein kleines Abo ab. Damit kannst du flexibel Fahrten für den laufenden und den Folgemonat veröffentlichen.
+- Als Mitfahrer buchst du komplett kostenlos. Wenn dir der Dienst gefällt, freuen wir uns natürlich über ein freiwilliges Trinkgeld.$welcome$
+) on conflict (key) do nothing;
+
+-- Dauerhaftes Log aller E-Mail-Versandversuche (aus der Edge Function
+-- "send-email" befüllt, Service-Role-Zugriff umgeht RLS automatisch).
+create table email_log (
+  id            uuid primary key default gen_random_uuid(),
+  created_at    timestamptz not null default now(),
+  recipient     text not null,
+  subject       text,
+  success       boolean not null,
+  error_message text
+);
+
+alter table email_log enable row level security;
+
+create policy "admin full access" on email_log
+  for all using (auth.role() = 'authenticated') with check (auth.role() = 'authenticated');
+
+revoke all on email_log from anon;
+
+create index email_log_created_at_idx on email_log (created_at desc);

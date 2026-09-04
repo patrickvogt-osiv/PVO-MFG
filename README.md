@@ -144,6 +144,8 @@ normale App nutzbar (Icon auf dem Homescreen), ohne App Store.
    - `supabase/migration_34_auto_entfernung_beim_veroeffentlichen.sql` (automatische Entfernungsberechnung beim Veröffentlichen)
    - `supabase/migration_35_suchauftrag_verwaltung.sql` (Übersicht & Löschen gespeicherter Suchaufträge)
    - `supabase/migration_36_fahrt_kopieren.sql` (Fahrt kopieren)
+   - `supabase/migration_37_willkommenstext_editierbar.sql` (Willkommenstext admin-editierbar)
+   - `supabase/migration_38_email_log.sql` (dauerhaftes E-Mail-Versand-Log)
 3. Unter **Authentication → Users** einen Benutzer für dich selbst anlegen
    (E-Mail + Passwort) — das ist dein Admin-Login für `/admin`.
 4. Unter **Project Settings → API** findest du:
@@ -432,3 +434,31 @@ Ein "Impressum"-Link erscheint jeweils unten auf:
 **Keine neue Datenbank-Migration nötig** — nutzt die bereits vorhandene
 `app_settings`-Tabelle und `fn_get_app_setting`-Funktion (aus dem
 Buy-Me-a-Coffee-Umbau).
+
+## Willkommenstext auf der Landing-Seite selbst pflegen
+
+Der zweigeteilte Willkommenstext (immer sichtbarer Teil + Teil hinter dem
+Button "Warum - Wie - Kosten") liegt jetzt ebenfalls in `app_settings` und
+lässt sich im Admin-Bereich unter "Einstellungen" bearbeiten — zwei
+Textfelder, eine Leerzeile erzeugt jeweils einen neuen Absatz. Migration 37
+befüllt beide Felder einmalig mit dem bisherigen Text als Startwert (nur
+falls noch nicht vorhanden), damit sich an der Anzeige zunächst nichts
+ändert, bis du selbst etwas änderst.
+
+## E-Mail-Log (dauerhaft)
+
+Jeder Versandversuch der Edge Function "send-email" (Buchung, Stornierung,
+Suchauftrag-Benachrichtigung usw.) wird jetzt dauerhaft in der Tabelle
+`email_log` gespeichert: Zeitpunkt, Adressat, Betreff, Ergebnis
+(Erfolg/Fehler) und bei Fehlern die genaue Fehlermeldung (z.B. das
+IONOS-Sendelimit).
+
+Einsehbar im Admin-Bereich unter dem neuen Tab **"E-Mail-Log"** — mit
+Filter nach Erfolg/Fehler, zeigt die letzten 300 Einträge.
+
+**Wichtig:** Damit das funktioniert, muss die aktualisierte Edge Function
+neu deployt werden (`supabase functions deploy send-email`) — sie schreibt
+jetzt zusätzlich in `email_log`, nachdem sie den eigentlichen Versand
+versucht hat. Schlägt das Loggen selbst fehl (sollte praktisch nie
+vorkommen), wird das nur in den Function-Logs vermerkt und verhindert nie
+den eigentlichen E-Mail-Versand.

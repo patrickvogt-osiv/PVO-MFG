@@ -22,6 +22,29 @@ function todayIso() {
 // Baut einen wa.me-Link aus einer Telefonnummer. Funktioniert zuverlässig nur
 // bei internationalem Format (z.B. "+41 79 123 45 67") — wa.me braucht die
 // Nummer ohne führende 0, ohne Leerzeichen/Klammern, ohne "+".
+// Fallback-Texte, falls in app_settings noch nichts hinterlegt ist (sollte
+// nach Migration 37 nicht vorkommen, aber sicherheitshalber vorhanden).
+const DEFAULT_WELCOME_INTRO = `Du möchtest einfach eine Mitfahrgelegenheit buchen? Oder als Fahrer deine freien Plätze anbieten, um Fahrtkosten zu teilen und neue Leute kennenzulernen? Dann bist du hier genau richtig!
+
+Schön, dass du da bist — gute Fahrt!`
+
+const DEFAULT_WELCOME_DETAILS = `Ich habe diese Plattform ins Leben gerufen, um eine schlanke, preiswerte und unkomplizierte Alternative zu den grossen Anbietern zu schaffen. Für Mitfahrer ist die Nutzung komplett gebührenfrei. Ganz umsonst lässt sich ein solches Projekt im Hintergrund aber leider nicht betreiben.
+
+Damit die Webseite rund um die Uhr sicher online bleibt, fallen laufende Kosten an — zum Beispiel für die Domain, das Webhosting, verschlüsselte SSL-Zertifikate, den automatischen E-Mail-Versand (Buchungsbestätigungen) sowie für Rechtstexte und die Transaktionsgebühren der Zahlungsanbieter.
+
+Um diese Ausgaben fair zu decken, setzen wir auf ein einfaches Unterstützer-Modell:
+
+- Als Fahrer schliesst du für lediglich 1 € pro Monat ein kleines Abo ab. Damit kannst du flexibel Fahrten für den laufenden und den Folgemonat veröffentlichen.
+- Als Mitfahrer buchst du komplett kostenlos. Wenn dir der Dienst gefällt, freuen wir uns natürlich über ein freiwilliges Trinkgeld.`
+
+// Rendert mehrzeiligen Freitext aus den Admin-Einstellungen als Absätze
+// (Leerzeile = neuer Absatz), ohne Markdown/HTML-Parsing.
+function renderMultilineText(text) {
+  return text.split(/\n\s*\n/).map((para, i) => (
+    <p key={i} style={{ margin: '0 0 12px', whiteSpace: 'pre-wrap' }}>{para}</p>
+  ))
+}
+
 function whatsappLink(phone, message) {
   if (!phone) return null
   let digits = phone.replace(/[^\d+]/g, '')
@@ -868,6 +891,13 @@ export default function InvitePage() {
   const [signupBusy, setSignupBusy] = useState(false)
   const [signupError, setSignupError] = useState(null)
   const [signupResult, setSignupResult] = useState(null)
+  const [welcomeIntro, setWelcomeIntro] = useState('')
+  const [welcomeDetails, setWelcomeDetails] = useState('')
+
+  useEffect(() => {
+    supabase.rpc('fn_get_app_setting', { p_key: 'welcome_text_intro' }).then(({ data }) => setWelcomeIntro(data || ''))
+    supabase.rpc('fn_get_app_setting', { p_key: 'welcome_text_details' }).then(({ data }) => setWelcomeDetails(data || ''))
+  }, [])
 
   async function submitSignup(e) {
     e.preventDefault()
@@ -925,12 +955,7 @@ export default function InvitePage() {
         <div className="container">
           {!signupRole && !signupResult && (
             <div className="card">
-              <p style={{ margin: '0 0 12px' }}>
-                Du möchtest einfach eine Mitfahrgelegenheit buchen? Oder als Fahrer deine
-                freien Plätze anbieten, um Fahrtkosten zu teilen und neue Leute kennenzulernen?
-                Dann bist du hier genau richtig!
-              </p>
-              <p style={{ margin: '0 0 12px', fontWeight: 600 }}>Schön, dass du da bist — gute Fahrt!</p>
+              {renderMultilineText(welcomeIntro || DEFAULT_WELCOME_INTRO)}
 
               <button
                 className="secondary"
@@ -940,37 +965,7 @@ export default function InvitePage() {
                 {showLandingDetails ? 'Weniger anzeigen' : 'Warum - Wie - Kosten'}
               </button>
 
-              {showLandingDetails && (
-                <>
-                  <p style={{ margin: '0 0 12px' }}>
-                    Ich habe diese Plattform ins Leben gerufen, um eine schlanke, preiswerte und
-                    unkomplizierte Alternative zu den grossen Anbietern zu schaffen. Für Mitfahrer
-                    ist die Nutzung komplett gebührenfrei. Ganz umsonst lässt sich ein solches
-                    Projekt im Hintergrund aber leider nicht betreiben.
-                  </p>
-                  <p style={{ margin: '0 0 12px' }}>
-                    Damit die Webseite rund um die Uhr sicher online bleibt, fallen laufende
-                    Kosten an — zum Beispiel für die Domain, das Webhosting, verschlüsselte
-                    SSL-Zertifikate, den automatischen E-Mail-Versand (Buchungsbestätigungen)
-                    sowie für Rechtstexte und die Transaktionsgebühren der Zahlungsanbieter.
-                  </p>
-                  <p style={{ margin: '0 0 8px' }}>
-                    Um diese Ausgaben fair zu decken, setzen wir auf ein einfaches
-                    Unterstützer-Modell:
-                  </p>
-                  <ul style={{ margin: 0, paddingLeft: 20 }}>
-                    <li style={{ marginBottom: 8 }}>
-                      Als Fahrer schliesst du für lediglich 1 € pro Monat ein kleines Abo ab.
-                      Damit kannst du flexibel Fahrten für den laufenden und den Folgemonat
-                      veröffentlichen.
-                    </li>
-                    <li>
-                      Als Mitfahrer buchst du komplett kostenlos. Wenn dir der Dienst gefällt,
-                      freuen wir uns natürlich über ein freiwilliges Trinkgeld.
-                    </li>
-                  </ul>
-                </>
-              )}
+              {showLandingDetails && renderMultilineText(welcomeDetails || DEFAULT_WELCOME_DETAILS)}
             </div>
           )}
 

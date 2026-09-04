@@ -61,6 +61,7 @@ export default function AdminDashboard() {
           <button className={tab === 'cars' ? 'active' : ''} onClick={() => setTab('cars')}>Autos</button>
           <button className={tab === 'trips' ? 'active' : ''} onClick={() => setTab('trips')}>Fahrten</button>
           <button className={tab === 'settings' ? 'active' : ''} onClick={() => setTab('settings')}>Einstellungen</button>
+          <button className={tab === 'emaillog' ? 'active' : ''} onClick={() => setTab('emaillog')}>E-Mail-Log</button>
         </div>
         {tab === 'people' && <PeopleTab />}
         {tab === 'drivers' && <DriversTab />}
@@ -68,6 +69,7 @@ export default function AdminDashboard() {
         {tab === 'cars' && <CarsTab />}
         {tab === 'trips' && <TripsTab />}
         {tab === 'settings' && <ProjectSettingsTab />}
+        {tab === 'emaillog' && <EmailLogTab />}
         <button className="secondary" style={{ width: '100%', marginTop: 20 }} onClick={() => supabase.auth.signOut()}>
           Abmelden
         </button>
@@ -77,18 +79,94 @@ export default function AdminDashboard() {
 }
 
 // ---------------------------------------------------------------------------
+function EmailLogTab() {
+  const [entries, setEntries] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [filter, setFilter] = useState('all') // 'all' | 'success' | 'error'
+
+  const load = useCallback(async () => {
+    setLoading(true)
+    const { data } = await supabase
+      .from('email_log')
+      .select('*')
+      .order('created_at', { ascending: false })
+      .limit(300)
+    setEntries(data || [])
+    setLoading(false)
+  }, [])
+
+  useEffect(() => { load() }, [load])
+
+  const filtered = entries.filter((e) => {
+    if (filter === 'success') return e.success
+    if (filter === 'error') return !e.success
+    return true
+  })
+
+  function formatTimestamp(ts) {
+    return new Date(ts).toLocaleString('de-DE', { dateStyle: 'medium', timeStyle: 'medium' })
+  }
+
+  return (
+    <div className="card">
+      <h3>E-Mail-Log</h3>
+      <div className="meta" style={{ marginBottom: 10 }}>
+        Zeigt die letzten 300 Versandversuche der Edge Function "send-email" (Buchung, Stornierung,
+        Suchauftrag-Benachrichtigung usw.) — jeweils mit Zeitpunkt, Adressat und Ergebnis.
+      </div>
+      <div className="row" style={{ marginBottom: 12 }}>
+        <button className={filter === 'all' ? '' : 'secondary'} onClick={() => setFilter('all')}>Alle ({entries.length})</button>
+        <button className={filter === 'success' ? '' : 'secondary'} onClick={() => setFilter('success')}>
+          ✓ Erfolg ({entries.filter((e) => e.success).length})
+        </button>
+        <button className={filter === 'error' ? '' : 'secondary'} onClick={() => setFilter('error')}>
+          ✕ Fehler ({entries.filter((e) => !e.success).length})
+        </button>
+        <button className="secondary" onClick={load}>Aktualisieren</button>
+      </div>
+      {loading && <div className="empty-state">Lädt …</div>}
+      {!loading && filtered.length === 0 && <div className="empty-state">Keine Einträge.</div>}
+      {!loading && filtered.map((e) => (
+        <div key={e.id} style={{ padding: '10px 0', borderBottom: '1px solid var(--color-border)' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 10 }}>
+            <div>
+              <strong>{e.recipient}</strong>
+              {e.subject && <div className="meta">{e.subject}</div>}
+              <div className="meta">{formatTimestamp(e.created_at)}</div>
+              {!e.success && e.error_message && (
+                <div className="meta" style={{ color: 'var(--color-danger)', marginTop: 4 }}>{e.error_message}</div>
+              )}
+            </div>
+            <span className={`badge ${e.success ? '' : 'full'}`} style={{ flex: 'none' }}>
+              {e.success ? '✓ Erfolg' : '✕ Fehler'}
+            </span>
+          </div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
 function ProjectSettingsTab() {
   const [bmcLink, setBmcLink] = useState('')
   const [emailBccTo, setEmailBccTo] = useState('')
   const [impressum, setImpressum] = useState('')
+  const [welcomeIntro, setWelcomeIntro] = useState('')
+  const [welcomeDetails, setWelcomeDetails] = useState('')
   const [loaded, setLoaded] = useState(false)
   const [saved, setSaved] = useState(false)
 
   const load = useCallback(async () => {
-    const { data } = await supabase.from('app_settings').select('*').in('key', ['buymeacoffee_link', 'email_bcc_to', 'impressum'])
+    const { data } = await supabase
+      .from('app_settings')
+      .select('*')
+      .in('key', ['buymeacoffee_link', 'email_bcc_to', 'impressum', 'welcome_text_intro', 'welcome_text_details'])
     setBmcLink(data?.find((r) => r.key === 'buymeacoffee_link')?.value || '')
     setEmailBccTo(data?.find((r) => r.key === 'email_bcc_to')?.value || '')
     setImpressum(data?.find((r) => r.key === 'impressum')?.value || '')
+    setWelcomeIntro(data?.find((r) => r.key === 'welcome_text_intro')?.value || '')
+    setWelcomeDetails(data?.find((r) => r.key === 'welcome_text_details')?.value || '')
     setLoaded(true)
   }, [])
 
@@ -100,6 +178,8 @@ function ProjectSettingsTab() {
       { key: 'buymeacoffee_link', value: bmcLink.trim() || null, updated_at: new Date().toISOString() },
       { key: 'email_bcc_to', value: emailBccTo.trim() || null, updated_at: new Date().toISOString() },
       { key: 'impressum', value: impressum.trim() || null, updated_at: new Date().toISOString() },
+      { key: 'welcome_text_intro', value: welcomeIntro.trim() || null, updated_at: new Date().toISOString() },
+      { key: 'welcome_text_details', value: welcomeDetails.trim() || null, updated_at: new Date().toISOString() },
     ])
     if (error) { alert('Fehler beim Speichern: ' + error.message); return }
     setSaved(true)
@@ -150,6 +230,30 @@ function ProjectSettingsTab() {
           rechtlich vollständigen Angaben eintragen (Name/Firma, Anschrift,
           Kontaktmöglichkeit) — je nach Land können weitere Pflichtangaben nötig
           sein; das kann ich als KI nicht rechtssicher für dich beurteilen.
+        </div>
+
+        <label>Willkommenstext — immer sichtbarer Teil</label>
+        <textarea
+          value={welcomeIntro}
+          onChange={(e) => setWelcomeIntro(e.target.value)}
+          rows={5}
+          style={{ width: '100%', fontFamily: 'inherit', fontSize: 14, padding: 10, borderRadius: 10, border: '1px solid var(--color-border)', resize: 'vertical' }}
+        />
+        <div className="meta" style={{ marginTop: 4, marginBottom: 10 }}>
+          Erscheint direkt oben auf der Landing-Seite (vor dem Button "Warum - Wie -
+          Kosten"). Leerzeile = neuer Absatz.
+        </div>
+
+        <label>Willkommenstext — Teil hinter "Warum - Wie - Kosten"</label>
+        <textarea
+          value={welcomeDetails}
+          onChange={(e) => setWelcomeDetails(e.target.value)}
+          rows={10}
+          style={{ width: '100%', fontFamily: 'inherit', fontSize: 14, padding: 10, borderRadius: 10, border: '1px solid var(--color-border)', resize: 'vertical' }}
+        />
+        <div className="meta" style={{ marginTop: 4, marginBottom: 10 }}>
+          Erscheint erst, wenn jemand auf der Landing-Seite auf "Warum - Wie - Kosten"
+          klickt. Leerzeile = neuer Absatz.
         </div>
 
         <button style={{ width: '100%' }}>{saved ? '✓ Gespeichert' : 'Speichern'}</button>
