@@ -1,4 +1,4 @@
-# Mitfahrt buchen
+# pickaride
 
 Persönliche Buchungsplattform für deine Standard-Autofahrtstrecken (z.B. Basel–München
 inkl. Zwischenstopps). Nur Personen, denen du einen Einladungslink schickst, können
@@ -67,6 +67,32 @@ normale App nutzbar (Icon auf dem Homescreen), ohne App Store.
   Startpunkt, Sauberkeit, Kommunikation — sichtbar für den Fahrer selbst
   (beim Bewerten), den Mitfahrer (eigene Einstellungen) und den Admin (Tab
   „Mitfahrer").
+- **Buy Me a Coffee (vorbereitet, noch nicht aktiv verifiziert)**: Im Admin-
+  Bereich, Tab „Einstellungen", hinterlegst du den **einen** Projekt-Link
+  (z.B. `buymeacoffee.com/deinprojekt`) — diesen einen Link nutzen alle
+  Fahrer und Mitfahrer zum Unterstützen, es gibt keinen Link pro Person.
+  Bei jedem Fahrer (Tab „Fahrer") und Mitfahrer (Tab „Mitfahrer") kannst du
+  zusätzlich einen Abo-Status ("☕ Buy-Me-a-Coffee-Abo aktiv") und ein
+  letztes Zahldatum pflegen — aktuell noch von Hand, da es noch keine echte
+  Zahlungsprüfung gibt. Im Kopfbereich der jeweiligen Person erscheint ein
+  ☕-Icon: farbig bei aktivem Abo, durchgestrichen/ausgegraut sonst; ein Klick
+  führt zum Projekt-Link. Eine spätere echte Verifizierung (z.B. über die
+  Buy-Me-a-Coffee-Webhook-API) kann direkt auf `bmc_subscription_active` und
+  `bmc_last_payment_date` aufsetzen.
+- **Fahrer-Kontakt mit WhatsApp-Link**: Mitfahrer sehen jetzt bei den
+  Fahrten-Suchergebnissen, der Fahrt-Detailansicht und "Meine Buchungen"
+  zusätzlich Namen und Mobilnummer des Fahrers. Ist die Nummer im
+  internationalen Format hinterlegt (z.B. `+41 79 123 45 67`), erscheint ein
+  Link "💬 WhatsApp", der den Chat direkt öffnet (`wa.me`-Link). Ohne
+  Ländervorwahl kann WhatsApp die Nummer nicht korrekt zuordnen — deshalb
+  weisen die Eingabefelder für die Mobilnummer entsprechend darauf hin.
+- **Fahrt-Veröffentlichung an aktives Abo geknüpft**: Ein Fahrer kann eine
+  neue Fahrt nur veröffentlichen, wenn sein `bmc_subscription_active` aktiv
+  ist UND das Fahrtdatum höchstens 40 Tage nach dem hinterlegten
+  `bmc_last_payment_date` liegt. Das wird serverseitig in
+  `fn_driver_create_trip` geprüft (nicht umgehbar) und dem Fahrer im
+  "Fahrt veröffentlichen"-Formular vorab klar angezeigt (inkl. Datum, bis zu
+  dem er veröffentlichen darf).
 - **Flexible Datumssuche**: Findet eine Suche mit Datum+Flexibilität eine
   Fahrt an einem abweichenden Tag, erscheint ein Hinweis wie "Diese Fahrt
   findet 2 Tage später statt als gesucht."
@@ -107,6 +133,17 @@ normale App nutzbar (Icon auf dem Homescreen), ohne App Store.
    - `supabase/migration_23_fahrer_via_zwischenstopps.sql` (Zwischenstopps in der eigenen Fahrtenliste des Fahrers)
    - `supabase/migration_24_bewertungssystem.sql` (Bewertungssystem für Fahrer)
    - `supabase/migration_25_mitfahrer_bewertungssystem.sql` (Bewertungssystem für Mitfahrer)
+   - `supabase/migration_26_zwischenstopp_loeschen_fehler.sql` (klare Fehlermeldung beim Löschen belegter Zwischenstopps)
+   - `supabase/migration_27_buymeacoffee_vorbereitung.sql` (Buy Me a Coffee Link vorbereiten, noch nicht aktiv)
+   - `supabase/migration_28_bmc_projekt_und_status.sql` (BMC-Umbau: ein Projekt-Link + Abo-Status pro Person)
+   - `supabase/migration_29_fahrer_kontakt_whatsapp.sql` (Fahrername/-telefonnummer bei Suchergebnissen & Buchungen)
+   - `supabase/migration_30_abo_pflicht_veroeffentlichen.sql` (Fahrt-Veröffentlichung nur mit aktivem Abo, 40-Tage-Fenster)
+   - `supabase/migration_31_fahrer_email_benachrichtigung.sql` (Fahrer-E-Mail für Benachrichtigungen verfügbar machen)
+   - `supabase/migration_32_umkreissuche.sql` (Koordinaten je Stopp für Umkreissuche)
+   - `supabase/migration_33_suchauftrag_benachrichtigung.sql` (Suchauftrag speichern & bei neuen Fahrten per E-Mail informieren)
+   - `supabase/migration_34_auto_entfernung_beim_veroeffentlichen.sql` (automatische Entfernungsberechnung beim Veröffentlichen)
+   - `supabase/migration_35_suchauftrag_verwaltung.sql` (Übersicht & Löschen gespeicherter Suchaufträge)
+   - `supabase/migration_36_fahrt_kopieren.sql` (Fahrt kopieren)
 3. Unter **Authentication → Users** einen Benutzer für dich selbst anlegen
    (E-Mail + Passwort) — das ist dein Admin-Login für `/admin`.
 4. Unter **Project Settings → API** findest du:
@@ -158,6 +195,16 @@ zwei Dinge automatisch:
   React-Router-Apps auf statischem Hosting). `netlify.toml` leitet alle Pfade
   auf `index.html` um, damit das clientseitige Routing greift.
 
+**Falls die Secrets-Warnung trotzdem erscheint:** Netlify hat zusätzlich ein
+neueres "Secret scanning with smart detection"-Feature (auf bezahlten Plänen
+automatisch aktiv), das unabhängig von der `netlify.toml`-Einstellung läuft.
+Falls das anschlägt: im Netlify-Dashboard unter
+**Project configuration → Environment variables** eine Variable
+`SECRETS_SCAN_SMART_DETECTION_OMIT_VALUES` anlegen und dort die drei
+**tatsächlichen Werte** (nicht die Variablennamen!) von `VITE_SUPABASE_URL`,
+`VITE_SUPABASE_ANON_KEY` und `VITE_ADMIN_EMAIL` kommagetrennt eintragen,
+danach neu deployen.
+
 Ab jetzt zeigen die Einladungslinks im Admin-Bereich automatisch auf diese Adresse.
 
 ### 5. Auf dem Smartphone installieren
@@ -193,3 +240,195 @@ damit auch bei gleichzeitigen Buchungen keine Überbuchung entstehen kann.
   über kontrollierte Funktionen lesen/schreiben, die ihren Einladungs-Token prüfen.
 - Der Admin-Bereich ist per Supabase-Auth (E-Mail/Passwort) geschützt.
 - Einladungslinks kannst du jederzeit einzeln widerrufen, ohne die Person zu löschen.
+
+## Neue Buchungen live mitbekommen (Fahrer-Bereich)
+
+Solange ein Fahrer seine eigene Seite geöffnet hat, wird alle 20 Sekunden im
+Hintergrund unauffällig geprüft, ob eine neue Buchung eingegangen ist (kein
+Neuladen, kein Ladezustand). Bei einer neuen Buchung erscheint:
+- ein Hinweis-Banner oben auf der Seite (verschwindet nach ca. 12 Sekunden),
+- zusätzlich eine Browser-Benachrichtigung, **falls** der Fahrer das im Tab
+  "Einstellungen" über den Button "Browser-Benachrichtigungen aktivieren"
+  erlaubt hat.
+
+Das funktioniert rein clientseitig über wiederholtes Abfragen
+(`fn_driver_list_trips`) und Vergleich der gebuchten Plätze — keine
+zusätzliche Server-Infrastruktur nötig. Eine "echte" Push-Benachrichtigung,
+die auch bei geschlossenem Tab ankommt, würde einen separaten Push-Dienst
+(Service Worker + Push API + Serverkomponente) erfordern und ist damit
+bewusst nicht Teil dieser einfachen Lösung.
+
+## E-Mail-Benachrichtigungen per SMTP (1&1/IONOS)
+
+Bei jeder Buchung und Stornierung verschickt die App automatisch E-Mails
+(Fahrer bei neuer/stornierter Buchung, Mitfahrer als Bestätigung) — über eine
+Supabase Edge Function, die sich per SMTP bei deinem 1&1/IONOS-Postfach
+anmeldet. Muss einmalig eingerichtet werden:
+
+### 1. Supabase CLI installieren (falls noch nicht vorhanden)
+
+```bash
+npm install -g supabase
+supabase login
+```
+
+### 2. Mit deinem Projekt verknüpfen
+
+Im Projektordner:
+
+```bash
+supabase link --project-ref DEIN-PROJEKT-REF
+```
+
+(`DEIN-PROJEKT-REF` findest du in der Supabase-Projekt-URL, z.B.
+`abcdefghijk` bei `https://abcdefghijk.supabase.co`.)
+
+### 3. SMTP-Zugangsdaten als Secrets hinterlegen
+
+**Niemals** Passwörter im Code oder in `.env` speichern — Supabase Secrets
+sind dafür da:
+
+```bash
+supabase secrets set SMTP_HOST=smtp.ionos.de
+supabase secrets set SMTP_PORT=465
+supabase secrets set SMTP_USER=deine-adresse@deine-domain.de
+supabase secrets set SMTP_PASS=DEIN-POSTFACH-PASSWORT
+supabase secrets set SMTP_FROM_NAME=pickaride
+```
+
+Falls Port 465 bei dir nicht funktioniert, `SMTP_PORT=587` versuchen (dann
+verwendet IONOS STARTTLS statt direktem SSL).
+
+**Kopie an dich selbst (BCC):** Wird jetzt **nicht** über ein Secret,
+sondern direkt in der App gesteuert: Admin-Bereich → Tab „Einstellungen" →
+Feld „E-Mail-BCC an". Trägst du dort eine Adresse ein, bekommt sie eine
+Kopie jeder automatisch verschickten E-Mail (Posteingang, nicht
+"Gesendet"-Ordner — SMTP-Versand füllt diesen Ordner grundsätzlich nicht,
+das ist reines Verhalten von E-Mail-Programmen wie Outlook/Thunderbird).
+Leer lassen = keine Kopie. Änderungen wirken sofort, ohne Redeploy.
+
+### 4. Edge Function deployen
+
+```bash
+supabase functions deploy send-email
+```
+
+### 5. Testen
+
+Nach dem Deploy: In der App eine Testbuchung durchführen (mit einer echten
+E-Mail-Adresse bei Fahrer und Mitfahrer hinterlegt) und prüfen, ob beide
+Postfächer eine E-Mail erhalten. Bei Problemen:
+
+```bash
+supabase functions logs send-email
+```
+
+zeigt die Logs der Funktion inkl. eventueller SMTP-Fehlermeldungen (z.B.
+falsches Passwort, falscher Port).
+
+### Wichtig zu wissen
+
+- Schlägt der E-Mail-Versand fehl, wird das nur in der Browser-Konsole
+  geloggt — die eigentliche Buchung/Stornierung funktioniert unabhängig
+  davon immer. E-Mails sind eine Zusatzfunktion, kein Blocker.
+- 1&1/IONOS begrenzt den Versand (anfangs ca. 50 E-Mails/Stunde, später bis
+  zu 500/Tag) — für den privaten Rahmen dieses Projekts ausreichend.
+- Diese Lösung wird direkt beim Buchen/Stornieren aus dem Browser heraus
+  ausgelöst. Für eine noch robustere Variante (unabhängig davon, ob der
+  Browser die Anfrage vollständig abschließt) ließe sich stattdessen ein
+  Supabase **Database Webhook** auf die `bookings`-Tabelle einrichten, der
+  dieselbe Edge Function serverseitig aufruft — bei Bedarf gerne als
+  nächsten Ausbauschritt.
+
+## Umkreissuche bei der Fahrtensuche
+
+Neben der Suche nach exaktem Ortsnamen gibt es jetzt zwei Slider — einen
+direkt über dem Feld "Startort" und einen direkt über "Zielort" — mit denen
+sich jeweils unabhängig ein Umkreis von ±10 bis ±50 km (in 10-km-Schritten,
+Voreinstellung ±10 km) einstellen lässt. Wählt ein Mitfahrer den Start-
+bzw. Zielort **aus den Vorschlägen** aus (nicht nur getippt), werden dessen
+Koordinaten übernommen; die Suche findet dann auch Fahrten mit einem
+Start-/Zielpunkt, der zwar anders heißt, aber innerhalb des gewählten
+Radius liegt (Luftlinie) — z.B. "München" findet dann auch eine Fahrt ab
+"Haar", wenn der Slider auf ±20 km oder mehr steht.
+
+**Voraussetzung:** Die Koordinaten der Streckenpunkte müssen bekannt sein —
+das ist automatisch der Fall, sobald für die jeweilige Strecke einmal
+"Entfernungen & Fahrzeiten berechnen" ausgeführt wurde (Admin- oder
+Fahrer-Bereich). Ohne das keine Koordinaten, keine Umkreissuche für diese
+Strecke — die normale Namenssuche funktioniert davon unabhängig immer.
+
+## Suchauftrag: "Informiere mich, wenn neue Fahrten eingestellt werden"
+
+Nach einer Suche erscheint oberhalb der Trefferliste ein Button
+"🔔 Informiere mich, wenn neue Fahrten eingestellt werden!" — sofern Start-
+und Zielort **aus den Vorschlägen ausgewählt** wurden (Koordinaten bekannt)
+und eine E-Mail-Adresse hinterlegt ist. Ein Klick speichert einen
+Suchauftrag.
+
+Wird danach eine **neue** Fahrt veröffentlicht (egal ob vom Fahrer selbst
+oder vom Admin), wird geprüft: Hat die Strecke einen Punkt innerhalb von
+**20 km** um den gespeicherten Startort UND — später in der Streckenfolge —
+einen Punkt innerhalb von 20 km um den gespeicherten Zielort? Falls ja,
+bekommt der Mitfahrer automatisch eine E-Mail.
+
+**Voraussetzung:** Wie bei der Umkreissuche müssen die Koordinaten der
+Streckenpunkte bekannt sein (einmal "Entfernungen berechnen" pro Strecke).
+Im Tab "Einstellungen" gibt es unter "🔔 Meine Suchaufträge" eine Übersicht
+aller gespeicherten Suchaufträge mit Lösch-Möglichkeit.
+
+## Automatische Entfernungsberechnung beim Veröffentlichen
+
+Klickt ein Fahrer oder der Admin auf "Veröffentlichen" und für die gewählte
+Strecke wurden noch nie Entfernungen berechnet (fehlende Koordinaten oder
+Distanzen), wird das jetzt automatisch nachgeholt — bevor die Fahrt
+gespeichert wird. Während der Berechnung erscheint "📍 Entfernungen für die
+gewählte Strecke werden berechnet …" statt des Veröffentlichen-Buttons; das
+kann je nach Anzahl Stopps ein paar Sekunden dauern (Nominatim erfordert aus
+Fairness-Gründen ca. 1 Sekunde Pause zwischen Anfragen).
+
+Das funktioniert **für jede Strecke**, unabhängig davon, wem sie gehört
+(eigene, admin-angelegte oder eine andere Fahrer-Strecke) — dafür gibt es
+zwei bewusst eng begrenzte Funktionen, die ausschließlich Koordinaten,
+Entfernungen und (nur falls noch 0) Standardpreise schreiben dürfen, aber
+keine sonstigen Änderungen an der Strecke (Name, Adressen, Reihenfolge)
+zulassen.
+
+Schlägt die automatische Berechnung fehl (z.B. Adressdienst nicht
+erreichbar, Adresse nicht auffindbar), wird die Fahrt trotzdem ganz normal
+veröffentlicht — nur eben ohne Entfernungen, wie bisher auch ohne dieses
+Feature. Das manuelle "Entfernungen & Fahrzeiten berechnen" im Streckeneditor
+bleibt zusätzlich bestehen und funktioniert unverändert.
+
+## Fahrt kopieren (Fahrer-Bereich)
+
+Bei jeder eigenen Fahrt in "Meine Fahrten" — egal ob bevorstehend oder
+bereits vergangen — gibt es jetzt einen Button "Kopieren". Er befüllt das
+"Fahrt veröffentlichen"-Formular oben mit Strecke und Auto der gewählten
+Fahrt; die Sitzplätze werden als Vorschlag übernommen. Datum und Startzeit
+bleiben bewusst leer und müssen neu eingetragen werden. Ein Hinweis-Banner
+zeigt an, dass gerade eine Vorlage aktiv ist ("Vorlage entfernen" setzt das
+Formular zurück).
+
+Die neue Fahrt durchläuft danach ganz normal alle bestehenden Prüfungen
+(aktives Abo, 40-Tage-Fenster, automatische Entfernungsberechnung falls
+nötig, Suchauftrag-Benachrichtigungen) — es ist technisch keine
+"Kopie", sondern einfach eine neue Fahrt mit vorausgefüllten Werten.
+
+## Impressum
+
+Unter `/impressum` gibt es jetzt eine öffentliche Impressum-Seite. Der Text
+wird im Admin-Bereich unter "Einstellungen" → Feld "Impressum" gepflegt
+(Freitext, mehrzeilig) — dort trägst du deine rechtlich vollständigen Angaben
+ein (Name/Firma, Anschrift, Kontaktmöglichkeit; je nach Land können weitere
+Pflichtangaben nötig sein, das kann ich als KI nicht rechtssicher für dich
+beurteilen).
+
+Ein "Impressum"-Link erscheint jeweils unten auf:
+- der Landing-/Anmeldeseite (ohne Einladungslink),
+- der Hauptseite der Mitfahrer,
+- der Hauptseite der Fahrer.
+
+**Keine neue Datenbank-Migration nötig** — nutzt die bereits vorhandene
+`app_settings`-Tabelle und `fn_get_app_setting`-Funktion (aus dem
+Buy-Me-a-Coffee-Umbau).

@@ -28,9 +28,17 @@ body {
 }
 
 .app-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
   padding: 20px 16px 12px;
   background: var(--color-primary);
   color: white;
+}
+
+.app-header-text {
+  min-width: 0;
 }
 
 .app-header h1 {
@@ -42,6 +50,39 @@ body {
   margin: 4px 0 0;
   font-size: 13px;
   opacity: 0.85;
+}
+
+.bmc-badge-wrapper {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+}
+
+.bmc-badge {
+  display: inline-block;
+  line-height: 1;
+  text-decoration: none;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+}
+
+.bmc-badge img {
+  display: block;
+  height: 32px;
+  width: auto;
+  border-radius: 6px;
+}
+
+.bmc-status {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  margin-top: 4px;
+  white-space: nowrap;
 }
 
 .container {

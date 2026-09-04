@@ -1,8 +1,41 @@
 import { useEffect, useState, useCallback } from 'react'
 import { supabase } from '../lib/supabaseClient'
 import { getEuroExchangeRate, formatConverted } from '../lib/currency'
+import Logo from '../components/Logo'
 
 const APP_BASE_URL = window.location.origin
+
+// Distanz zwischen zwei Koordinaten in km (Luftlinie), für gespeicherte
+// Suchaufträge ("Informiere mich...").
+function haversineKm(lat1, lon1, lat2, lon2) {
+  const R = 6371
+  const dLat = ((lat2 - lat1) * Math.PI) / 180
+  const dLon = ((lon2 - lon1) * Math.PI) / 180
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos((lat1 * Math.PI) / 180) * Math.cos((lat2 * Math.PI) / 180) * Math.sin(dLon / 2) ** 2
+  return 2 * R * Math.asin(Math.sqrt(a))
+}
+
+// Schickt eine E-Mail über die Supabase Edge Function "send-email" (SMTP im
+// Hintergrund). Schlägt der Versand fehl, wird das nur geloggt.
+async function sendEmailNotification(to, subject, text) {
+  if (!to) {
+    console.log('[E-Mail] Übersprungen — keine Empfängeradresse vorhanden.', { subject })
+    return
+  }
+  console.log('[E-Mail] Sende-Versuch gestartet.', { to, subject })
+  try {
+    const { data, error } = await supabase.functions.invoke('send-email', { body: { to, subject, text } })
+    if (error) {
+      console.error('[E-Mail] Function meldete einen Fehler:', error, { to, subject })
+    } else {
+      console.log('[E-Mail] Erfolgreich ausgelöst, Antwort:', data, { to, subject })
+    }
+  } catch (err) {
+    console.error('[E-Mail] Aufruf ist fehlgeschlagen, bevor eine Antwort kam (Netzwerk/CORS/falsche Zugangsdaten?):', err, { to, subject })
+  }
+}
 
 function formatDate(dateStr) {
   const d = new Date(dateStr + 'T00:00:00')
@@ -15,8 +48,10 @@ export default function AdminDashboard() {
   return (
     <>
       <div className="app-header">
-        <h1>Admin</h1>
-        <p>Strecken, Autos, Fahrten & Einladungen verwalten</p>
+        <div className="app-header-text">
+          <Logo height={36} />
+          <p>Admin — Strecken, Autos, Fahrten & Einladungen verwalten</p>
+        </div>
       </div>
       <div className="container">
         <div className="tabs">
@@ -25,12 +60,14 @@ export default function AdminDashboard() {
           <button className={tab === 'routes' ? 'active' : ''} onClick={() => setTab('routes')}>Strecken</button>
           <button className={tab === 'cars' ? 'active' : ''} onClick={() => setTab('cars')}>Autos</button>
           <button className={tab === 'trips' ? 'active' : ''} onClick={() => setTab('trips')}>Fahrten</button>
+          <button className={tab === 'settings' ? 'active' : ''} onClick={() => setTab('settings')}>Einstellungen</button>
         </div>
         {tab === 'people' && <PeopleTab />}
         {tab === 'drivers' && <DriversTab />}
         {tab === 'routes' && <RoutesTab />}
         {tab === 'cars' && <CarsTab />}
         {tab === 'trips' && <TripsTab />}
+        {tab === 'settings' && <ProjectSettingsTab />}
         <button className="secondary" style={{ width: '100%', marginTop: 20 }} onClick={() => supabase.auth.signOut()}>
           Abmelden
         </button>
@@ -40,15 +77,107 @@ export default function AdminDashboard() {
 }
 
 // ---------------------------------------------------------------------------
+function ProjectSettingsTab() {
+  const [bmcLink, setBmcLink] = useState('')
+  const [emailBccTo, setEmailBccTo] = useState('')
+  const [impressum, setImpressum] = useState('')
+  const [loaded, setLoaded] = useState(false)
+  const [saved, setSaved] = useState(false)
+
+  const load = useCallback(async () => {
+    const { data } = await supabase.from('app_settings').select('*').in('key', ['buymeacoffee_link', 'email_bcc_to', 'impressum'])
+    setBmcLink(data?.find((r) => r.key === 'buymeacoffee_link')?.value || '')
+    setEmailBccTo(data?.find((r) => r.key === 'email_bcc_to')?.value || '')
+    setImpressum(data?.find((r) => r.key === 'impressum')?.value || '')
+    setLoaded(true)
+  }, [])
+
+  useEffect(() => { load() }, [load])
+
+  async function save(e) {
+    e.preventDefault()
+    const { error } = await supabase.from('app_settings').upsert([
+      { key: 'buymeacoffee_link', value: bmcLink.trim() || null, updated_at: new Date().toISOString() },
+      { key: 'email_bcc_to', value: emailBccTo.trim() || null, updated_at: new Date().toISOString() },
+      { key: 'impressum', value: impressum.trim() || null, updated_at: new Date().toISOString() },
+    ])
+    if (error) { alert('Fehler beim Speichern: ' + error.message); return }
+    setSaved(true)
+    setTimeout(() => setSaved(false), 1500)
+  }
+
+  if (!loaded) return null
+
+  return (
+    <div className="card">
+      <h3>Projekt-Einstellungen</h3>
+      <form onSubmit={save}>
+        <label>Buy Me a Coffee — Projekt-Link</label>
+        <input
+          type="url"
+          value={bmcLink}
+          onChange={(e) => setBmcLink(e.target.value)}
+          placeholder="z.B. https://buymeacoffee.com/deinprojekt"
+        />
+        <div className="meta" style={{ marginTop: 4, marginBottom: 10 }}>
+          Dies ist der EINE Link des Projekts, den alle Fahrer und Mitfahrer zum
+          Unterstützen nutzen — nicht pro Person, sondern zentral hier gepflegt.
+        </div>
+
+        <label>E-Mail-BCC an</label>
+        <input
+          type="email"
+          value={emailBccTo}
+          onChange={(e) => setEmailBccTo(e.target.value)}
+          placeholder="z.B. deine-adresse@domain.de"
+        />
+        <div className="meta" style={{ marginTop: 4, marginBottom: 10 }}>
+          Jede automatisch verschickte E-Mail (Buchung/Stornierung) geht zusätzlich
+          als Kopie an diese Adresse. Leer lassen, um keine Kopie zu verschicken.
+        </div>
+
+        <label>Impressum</label>
+        <textarea
+          value={impressum}
+          onChange={(e) => setImpressum(e.target.value)}
+          rows={10}
+          placeholder={'z.B.\nMax Mustermann\nMusterstraße 1\n12345 Musterstadt\n\nE-Mail: kontakt@example.com\nTelefon: +41 79 123 45 67'}
+          style={{ width: '100%', fontFamily: 'inherit', fontSize: 14, padding: 10, borderRadius: 10, border: '1px solid var(--color-border)', resize: 'vertical' }}
+        />
+        <div className="meta" style={{ marginTop: 4, marginBottom: 10 }}>
+          Wird öffentlich unter /impressum angezeigt (Link erscheint auf den
+          Start-/Landing-Seiten von Fahrern und Mitfahrern). Bitte hier deine
+          rechtlich vollständigen Angaben eintragen (Name/Firma, Anschrift,
+          Kontaktmöglichkeit) — je nach Land können weitere Pflichtangaben nötig
+          sein; das kann ich als KI nicht rechtssicher für dich beurteilen.
+        </div>
+
+        <button style={{ width: '100%' }}>{saved ? '✓ Gespeichert' : 'Speichern'}</button>
+      </form>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
 function PeopleTab() {
   const [people, setPeople] = useState([])
   const [name, setName] = useState('')
   const [copiedId, setCopiedId] = useState(null)
   const [ratingsByPerson, setRatingsByPerson] = useState({})
+  const [bmcDrafts, setBmcDrafts] = useState({})
+  const [bmcSavedId, setBmcSavedId] = useState(null)
 
   const load = useCallback(async () => {
     const { data } = await supabase.from('people').select('*').order('created_at', { ascending: false })
     setPeople(data || [])
+    const nextDrafts = {}
+    for (const p of data || []) {
+      nextDrafts[p.id] = {
+        active: p.bmc_subscription_active || false,
+        lastPaymentDate: p.bmc_last_payment_date || '',
+      }
+    }
+    setBmcDrafts(nextDrafts)
 
     const { data: ratings } = await supabase
       .from('person_ratings')
@@ -100,6 +229,22 @@ function PeopleTab() {
     setTimeout(() => setCopiedId(null), 1500)
   }
 
+  function updateBmcDraft(personId, field, value) {
+    setBmcDrafts((prev) => ({ ...prev, [personId]: { ...prev[personId], [field]: value } }))
+  }
+
+  async function saveBmc(p) {
+    const draft = bmcDrafts[p.id]
+    const { error } = await supabase.from('people').update({
+      bmc_subscription_active: draft.active,
+      bmc_last_payment_date: draft.lastPaymentDate || null,
+    }).eq('id', p.id)
+    if (error) { alert('Fehler beim Speichern: ' + error.message); return }
+    setBmcSavedId(p.id)
+    setTimeout(() => setBmcSavedId(null), 1500)
+    load()
+  }
+
   return (
     <>
       <div className="card">
@@ -111,32 +256,54 @@ function PeopleTab() {
         </form>
       </div>
 
-      {people.map((p) => (
-        <div className="card" key={p.id}>
-          <h3>{p.name} {p.revoked && <span className="badge full">widerrufen</span>}</h3>
-          {(p.phone || p.email) && (
-            <div className="meta">{[p.phone, p.email].filter(Boolean).join(' · ')}</div>
-          )}
-          <div className="meta" style={{ marginTop: 4 }}>
-            {ratingsByPerson[p.id]
-              ? `⭐ ${ratingsByPerson[p.id].avg_overall} (${ratingsByPerson[p.id].count} Bewertung${ratingsByPerson[p.id].count === 1 ? '' : 'en'}) — Pünktlichkeit ${ratingsByPerson[p.id].avg_punctuality} · Sauberkeit ${ratingsByPerson[p.id].avg_cleanliness} · Kommunikation ${ratingsByPerson[p.id].avg_communication}`
-              : 'Noch keine Bewertungen.'}
-          </div>
-          <div className="link-box">
-            <span style={{ flex: 1 }}>{inviteLink(p.invite_token)}</span>
-            <button className="secondary" style={{ padding: '4px 8px' }} onClick={() => copyLink(p)}>
-              {copiedId === p.id ? '✓' : 'Kopieren'}
+      {people.map((p) => {
+        const draft = bmcDrafts[p.id] || { active: false, lastPaymentDate: '' }
+        return (
+          <div className="card" key={p.id}>
+            <h3>{p.name} {p.revoked && <span className="badge full">widerrufen</span>}</h3>
+            {(p.phone || p.email) && (
+              <div className="meta">{[p.phone, p.email].filter(Boolean).join(' · ')}</div>
+            )}
+            <div className="meta" style={{ marginTop: 4 }}>
+              {ratingsByPerson[p.id]
+                ? `⭐ ${ratingsByPerson[p.id].avg_overall} (${ratingsByPerson[p.id].count} Bewertung${ratingsByPerson[p.id].count === 1 ? '' : 'en'}) — Pünktlichkeit ${ratingsByPerson[p.id].avg_punctuality} · Sauberkeit ${ratingsByPerson[p.id].avg_cleanliness} · Kommunikation ${ratingsByPerson[p.id].avg_communication}`
+                : 'Noch keine Bewertungen.'}
+            </div>
+            <div className="link-box">
+              <span style={{ flex: 1 }}>{inviteLink(p.invite_token)}</span>
+              <button className="secondary" style={{ padding: '4px 8px' }} onClick={() => copyLink(p)}>
+                {copiedId === p.id ? '✓' : 'Kopieren'}
+              </button>
+            </div>
+
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 10 }}>
+              <input
+                type="checkbox"
+                checked={draft.active}
+                onChange={(e) => updateBmcDraft(p.id, 'active', e.target.checked)}
+                style={{ width: 'auto' }}
+              /> ☕ Buy-Me-a-Coffee-Abo aktiv
+            </label>
+            <label>Letztes Zahldatum</label>
+            <input
+              type="date"
+              value={draft.lastPaymentDate}
+              onChange={(e) => updateBmcDraft(p.id, 'lastPaymentDate', e.target.value)}
+            />
+            <button className="secondary" style={{ marginTop: 10, width: '100%' }} onClick={() => saveBmc(p)}>
+              {bmcSavedId === p.id ? '✓ Gespeichert' : 'BMC-Status speichern'}
+            </button>
+
+            <button
+              className={p.revoked ? 'secondary' : 'danger'}
+              style={{ marginTop: 10 }}
+              onClick={() => toggleRevoke(p)}
+            >
+              {p.revoked ? 'Zugang wiederherstellen' : 'Zugang widerrufen'}
             </button>
           </div>
-          <button
-            className={p.revoked ? 'secondary' : 'danger'}
-            style={{ marginTop: 10 }}
-            onClick={() => toggleRevoke(p)}
-          >
-            {p.revoked ? 'Zugang wiederherstellen' : 'Zugang widerrufen'}
-          </button>
-        </div>
-      ))}
+        )
+      })}
     </>
   )
 }
@@ -275,6 +442,8 @@ function DriversTab() {
         payment_info: d.payment_info || '',
         reference_currency: d.reference_currency || '',
         rate_eur_per_100km: d.rate_eur_per_100km ?? '',
+        bmcActive: d.bmc_subscription_active || false,
+        bmcLastPaymentDate: d.bmc_last_payment_date || '',
       }
     }
     setDrafts(nextDrafts)
@@ -342,6 +511,8 @@ function DriversTab() {
       payment_info: draft.payment_info?.trim() || null,
       reference_currency: draft.reference_currency?.trim().toUpperCase() || null,
       rate_eur_per_100km: draft.rate_eur_per_100km === '' ? null : Number(draft.rate_eur_per_100km),
+      bmc_subscription_active: draft.bmcActive || false,
+      bmc_last_payment_date: draft.bmcLastPaymentDate || null,
     }).eq('id', d.id)
     if (error) { alert('Fehler beim Speichern: ' + error.message); return }
     setSavedId(d.id)
@@ -365,7 +536,7 @@ function DriversTab() {
       </div>
 
       {drivers.map((d) => {
-        const draft = drafts[d.id] || { payment_info: '', reference_currency: '', rate_eur_per_100km: '' }
+        const draft = drafts[d.id] || { payment_info: '', reference_currency: '', rate_eur_per_100km: '', bmcActive: false, bmcLastPaymentDate: '' }
         return (
           <div className="card" key={d.id}>
             <h3>{d.name} {d.revoked && <span className="badge full">widerrufen</span>}</h3>
@@ -408,6 +579,22 @@ function DriversTab() {
                 />
               </div>
             </div>
+
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 10 }}>
+              <input
+                type="checkbox"
+                checked={draft.bmcActive}
+                onChange={(e) => updateDraft(d.id, 'bmcActive', e.target.checked)}
+                style={{ width: 'auto' }}
+              /> ☕ Buy-Me-a-Coffee-Abo aktiv
+            </label>
+            <label>Letztes Zahldatum</label>
+            <input
+              type="date"
+              value={draft.bmcLastPaymentDate}
+              onChange={(e) => updateDraft(d.id, 'bmcLastPaymentDate', e.target.value)}
+            />
+
             <button className="secondary" style={{ marginTop: 10, width: '100%' }} onClick={() => saveDriverProfile(d)}>
               {savedId === d.id ? '✓ Gespeichert' : 'Speichern'}
             </button>
@@ -617,7 +804,16 @@ function RoutesTab() {
 
   async function removeStop(stop) {
     if (!confirm(`„${stop.name}" wirklich entfernen?`)) return
-    await supabase.from('route_stops').delete().eq('id', stop.id)
+    setSaveError(null)
+    const { error: err } = await supabase.from('route_stops').delete().eq('id', stop.id)
+    if (err) {
+      if (err.code === '23503') {
+        setSaveError(`„${stop.name}" kann nicht gelöscht werden, da bereits mindestens eine Buchung diesen Ein-/Ausstiegspunkt nutzt. Storniere zuerst die betreffenden Buchungen.`)
+      } else {
+        setSaveError('Zwischenstopp konnte nicht gelöscht werden: ' + err.message)
+      }
+      return
+    }
     const remaining = stops.filter((s) => s.id !== stop.id)
     for (let i = 0; i < remaining.length; i++) {
       if (remaining[i].order_index !== i) {
@@ -1128,6 +1324,7 @@ function TripsTab() {
   const [seats, setSeats] = useState(3)
   const [openTripBookings, setOpenTripBookings] = useState(null)
   const [bookings, setBookings] = useState([])
+  const [calcStatus, setCalcStatus] = useState(null)
 
   const load = useCallback(async () => {
     const { data: r } = await supabase.from('routes').select('*').order('name')
@@ -1145,19 +1342,129 @@ function TripsTab() {
 
   useEffect(() => { load() }, [load])
 
+  // Prüft vor dem Veröffentlichen, ob für die gewählte Strecke bereits
+  // Entfernungen berechnet wurden — falls nicht, wird das automatisch
+  // nachgeholt. Schlägt das fehl (z.B. Adresse nicht auffindbar), wird die
+  // Fahrt trotzdem veröffentlicht, nur eben ohne Entfernungen.
+  async function ensureRouteDistances(routeIdToCheck, driverIdForRate) {
+    const { data: stops } = await supabase
+      .from('route_stops')
+      .select('*')
+      .eq('route_id', routeIdToCheck)
+      .order('order_index')
+    if (!stops || stops.length < 2) return
+    const needsCalc = stops.some((s, i) =>
+      s.latitude == null || s.longitude == null || (i < stops.length - 1 && !s.distance_to_next_km)
+    )
+    if (!needsCalc) return
+
+    setCalcStatus('Entfernungen für die gewählte Strecke werden berechnet …')
+    try {
+      const coords = []
+      for (const s of stops) {
+        const address = [s.street, s.house_number, s.postal_code, s.name, s.country].filter(Boolean).join(', ')
+        const res = await fetch(`https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${encodeURIComponent(address || s.name)}`)
+        const json = await res.json()
+        if (!json || json.length === 0) return
+        coords.push({ lat: parseFloat(json[0].lat), lon: parseFloat(json[0].lon) })
+        await new Promise((r) => setTimeout(r, 1000))
+      }
+
+      const coordsStr = coords.map((c) => `${c.lon},${c.lat}`).join(';')
+      const osrmRes = await fetch(`https://router.project-osrm.org/route/v1/driving/${coordsStr}?overview=false`)
+      const osrmData = await osrmRes.json()
+      if (!osrmData?.routes?.length) return
+      const legs = osrmData.routes[0].legs
+
+      const { data: driverRow } = driverIdForRate
+        ? await supabase.from('drivers').select('rate_eur_per_100km').eq('id', driverIdForRate).single()
+        : { data: null }
+      const rate = driverRow?.rate_eur_per_100km ?? null
+
+      let totalDistance = 0
+      for (let i = 0; i < stops.length; i++) {
+        const patch = { latitude: coords[i].lat, longitude: coords[i].lon }
+        if (i < legs.length) {
+          const distanceKm = Math.round((legs[i].distance / 1000) * 10) / 10
+          patch.distance_to_next_km = distanceKm
+          patch.duration_to_next_min = Math.round(legs[i].duration / 60)
+          totalDistance += distanceKm
+          if (rate != null && !stops[i].price_to_next) {
+            patch.price_to_next = Math.round((rate * distanceKm) / 100)
+          }
+        }
+        await supabase.from('route_stops').update(patch).eq('id', stops[i].id)
+      }
+
+      if (rate != null) {
+        const { data: routeRow } = await supabase.from('routes').select('total_price').eq('id', routeIdToCheck).single()
+        if (!routeRow?.total_price) {
+          const newTotal = Math.round((rate * totalDistance) / 100)
+          await supabase.from('routes').update({ total_price: newTotal }).eq('id', routeIdToCheck)
+        }
+      }
+    } catch {
+      // Adressdienst nicht erreichbar o.ä. — Fahrt wird trotzdem veröffentlicht.
+    } finally {
+      setCalcStatus(null)
+    }
+  }
+
   async function publishTrip(e) {
     e.preventDefault()
     if (!routeId || !carId || !driverId || !date || !time || !seats) return
-    await supabase.from('trips').insert({
+    const tripDate = date
+    const tripTime = time
+    await ensureRouteDistances(routeId, driverId)
+    const { data: inserted, error } = await supabase.from('trips').insert({
       route_id: routeId,
       car_id: carId,
       driver_id: driverId,
-      trip_date: date,
-      start_time: time,
+      trip_date: tripDate,
+      start_time: tripTime,
       total_seats: Number(seats),
-    })
+    }).select('id').single()
     setDate(''); setTime(''); setSeats(3)
     load()
+
+    if (!error && inserted) {
+      notifyMatchingSearchAlerts(routeId, tripDate, tripTime)
+    }
+  }
+
+  async function notifyMatchingSearchAlerts(routeIdForTrip, tripDate, tripTime) {
+    const [{ data: stops }, { data: alerts }] = await Promise.all([
+      supabase.from('route_stops').select('order_index, latitude, longitude').eq('route_id', routeIdForTrip),
+      supabase.from('search_alerts').select('*, people(name, email, revoked)'),
+    ])
+    const routeName = routes.find((r) => r.id === routeIdForTrip)?.name || 'eine Strecke'
+    const validStops = (stops || []).filter((s) => s.latitude != null && s.longitude != null)
+
+    for (const alert of alerts || []) {
+      const person = alert.people
+      if (!person || person.revoked || !person.email) continue
+      const startMatch = validStops.find(
+        (s) => haversineKm(alert.start_lat, alert.start_lon, s.latitude, s.longitude) <= alert.radius_km
+      )
+      if (!startMatch) continue
+      const destMatch = validStops.find(
+        (s) =>
+          s.order_index > startMatch.order_index &&
+          haversineKm(alert.dest_lat, alert.dest_lon, s.latitude, s.longitude) <= alert.radius_km
+      )
+      if (!destMatch) continue
+
+      sendEmailNotification(
+        person.email,
+        `Neue Fahrt in deiner Umgebung: ${routeName}`,
+        [
+          `Hallo ${person.name || ''}!`.replace('Hallo !', 'Hallo!'),
+          `Es wurde soeben eine neue Fahrt veröffentlicht, die zu deiner gespeicherten Suche passt:`,
+          `${routeName} am ${formatDate(tripDate)} (${tripTime} Uhr)`,
+          `Schau in der App vorbei, um einen Platz zu buchen!`,
+        ].join('\n')
+      )
+    }
   }
 
   const carsForSelectedDriver = driverId ? cars.filter((c) => c.driver_id === driverId) : []
@@ -1242,7 +1549,10 @@ function TripsTab() {
           </div>
           <label>Freie Plätze</label>
           <input type="number" min="1" value={seats} onChange={(e) => setSeats(e.target.value)} required />
-          <button style={{ marginTop: 12, width: '100%' }} disabled={cars.length === 0 || drivers.length === 0}>Veröffentlichen</button>
+          {calcStatus && <div className="meta" style={{ marginTop: 8 }}>📍 {calcStatus}</div>}
+          <button style={{ marginTop: 12, width: '100%' }} disabled={!!calcStatus || cars.length === 0 || drivers.length === 0}>
+            {calcStatus ? 'Berechne Entfernungen …' : 'Veröffentlichen'}
+          </button>
         </form>
       </div>
 

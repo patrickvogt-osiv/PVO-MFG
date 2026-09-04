@@ -11,6 +11,14 @@
 
 create extension if not exists pgcrypto;
 
+-- Generische Admin-Einstellungen (Key/Value), aktuell für den
+-- Buy-Me-a-Coffee-Projekt-Link genutzt.
+create table app_settings (
+  key        text primary key,
+  value      text,
+  updated_at timestamptz not null default now()
+);
+
 -- ----------------------------------------------------------------------------
 -- Tabellen
 -- ----------------------------------------------------------------------------
@@ -18,28 +26,32 @@ create extension if not exists pgcrypto;
 -- Eingeladene Mitfahrer. Der invite_token ist das "Ticket" für den Zugang -
 -- wer den Link mit diesem Token hat, kann buchen.
 create table people (
-  id           uuid primary key default gen_random_uuid(),
-  name         text not null,
-  phone        text,
-  email        text,
-  invite_token text not null unique default encode(gen_random_bytes(16), 'hex'),
-  revoked      boolean not null default false,
-  created_at   timestamptz not null default now()
+  id                       uuid primary key default gen_random_uuid(),
+  name                     text not null,
+  phone                    text,
+  email                    text,
+  bmc_subscription_active  boolean not null default false,
+  bmc_last_payment_date    date,
+  invite_token             text not null unique default encode(gen_random_bytes(16), 'hex'),
+  revoked                  boolean not null default false,
+  created_at               timestamptz not null default now()
 );
 
 -- Fahrer: eigene Rolle mit eigenem Einladungslink. Sehen und verwalten nur
 -- ihre eigenen Fahrten und Autos.
 create table drivers (
-  id                   uuid primary key default gen_random_uuid(),
-  name                 text not null,
-  phone                text,
-  email                text,
-  payment_info         text,
-  reference_currency   text,
-  rate_eur_per_100km   numeric,
-  invite_token         text not null unique default encode(gen_random_bytes(16), 'hex'),
-  revoked              boolean not null default false,
-  created_at           timestamptz not null default now()
+  id                       uuid primary key default gen_random_uuid(),
+  name                     text not null,
+  phone                    text,
+  email                    text,
+  payment_info             text,
+  reference_currency       text,
+  rate_eur_per_100km       numeric,
+  bmc_subscription_active  boolean not null default false,
+  bmc_last_payment_date    date,
+  invite_token             text not null unique default encode(gen_random_bytes(16), 'hex'),
+  revoked                  boolean not null default false,
+  created_at               timestamptz not null default now()
 );
 
 -- Autos, die für Fahrten genutzt werden. Jedes Auto gehört einem Fahrer.
@@ -160,6 +172,33 @@ create table person_ratings (
   updated_at            timestamptz not null default now()
 );
 
+-- Gespeicherte Suchaufträge: Mitfahrer möchten benachrichtigt werden, wenn
+-- eine neue Fahrt innerhalb eines Umkreises um Start-/Zielort erscheint.
+create table search_alerts (
+  id          uuid primary key default gen_random_uuid(),
+  person_id   uuid not null references people(id) on delete cascade,
+  start_lat   numeric not null,
+  start_lon   numeric not null,
+  start_label text,
+  dest_lat    numeric not null,
+  dest_lon    numeric not null,
+  dest_label  text,
+  radius_km   integer not null default 20,
+  created_at  timestamptz not null default now()
+);
+
+-- Distanz zwischen zwei Koordinaten in km (Luftlinie).
+create or replace function fn_haversine_km(lat1 numeric, lon1 numeric, lat2 numeric, lon2 numeric)
+returns numeric
+language sql
+immutable
+as $$
+  select 6371 * 2 * asin(sqrt(
+    sin(radians(lat2 - lat1) / 2) ^ 2 +
+    cos(radians(lat1)) * cos(radians(lat2)) * sin(radians(lon2 - lon1) / 2) ^ 2
+  ));
+$$;
+
 -- ----------------------------------------------------------------------------
 -- Row Level Security
 -- ----------------------------------------------------------------------------
@@ -179,6 +218,8 @@ alter table trips        enable row level security;
 alter table bookings     enable row level security;
 alter table driver_ratings enable row level security;
 alter table person_ratings enable row level security;
+alter table app_settings enable row level security;
+alter table search_alerts enable row level security;
 
 create policy "admin full access" on people
   for all using (auth.role() = 'authenticated') with check (auth.role() = 'authenticated');
@@ -198,9 +239,27 @@ create policy "admin full access" on driver_ratings
   for all using (auth.role() = 'authenticated') with check (auth.role() = 'authenticated');
 create policy "admin full access" on person_ratings
   for all using (auth.role() = 'authenticated') with check (auth.role() = 'authenticated');
+create policy "admin full access" on app_settings
+  for all using (auth.role() = 'authenticated') with check (auth.role() = 'authenticated');
+create policy "admin full access" on search_alerts
+  for all using (auth.role() = 'authenticated') with check (auth.role() = 'authenticated');
 
 -- Kein direkter Zugriff für anon über die Tabellen selbst
-revoke all on people, cars, drivers, routes, route_stops, trips, bookings, driver_ratings, person_ratings from anon;
+revoke all on people, cars, drivers, routes, route_stops, trips, bookings, driver_ratings, person_ratings, app_settings, search_alerts from anon;
+
+-- Öffentlicher, lesender Zugriff auf einzelne Einstellungen (z.B. den
+-- Buy-Me-a-Coffee-Projekt-Link), damit auch Fahrer/Mitfahrer (anon-Key) ihn
+-- sehen können.
+create or replace function fn_get_app_setting(p_key text)
+returns text
+language sql
+security definer
+set search_path = public
+as $$
+  select value from app_settings where key = p_key;
+$$;
+
+grant execute on function fn_get_app_setting(text) to anon;
 
 -- ----------------------------------------------------------------------------
 -- RPC-Funktionen für eingeladene Mitfahrer (aufgerufen mit dem anon-Key)
@@ -228,6 +287,7 @@ begin
     select tr.id, tr.trip_date, tr.start_time, tr.total_seats, tr.closed,
            r.id as route_id, r.name as route_name,
            c.name as car_name, c.notes as car_notes,
+           d.name as driver_name, d.phone as driver_phone,
            (
              select string_agg(rs.name, ', ' order by rs.order_index)
              from route_stops rs
@@ -236,7 +296,10 @@ begin
                and rs.order_index < (select max(order_index) from route_stops where route_id = tr.route_id)
            ) as via_stops,
            (
-             select coalesce(json_agg(json_build_object('name', rs.name, 'country', rs.country, 'order_index', rs.order_index) order by rs.order_index), '[]'::json)
+             select coalesce(json_agg(json_build_object(
+               'name', rs.name, 'country', rs.country, 'order_index', rs.order_index,
+               'latitude', rs.latitude, 'longitude', rs.longitude
+             ) order by rs.order_index), '[]'::json)
              from route_stops rs
              where rs.route_id = tr.route_id
            ) as stops,
@@ -275,6 +338,7 @@ begin
     from trips tr
     join routes r on r.id = tr.route_id
     left join cars c on c.id = tr.car_id
+    left join drivers d on d.id = tr.driver_id
     where tr.trip_date >= current_date
     order by tr.trip_date, tr.start_time
   ) t;
@@ -290,7 +354,13 @@ begin
   from person_ratings where person_id = v_person.id;
 
   return json_build_object(
-    'person', json_build_object('id', v_person.id, 'name', v_person.name, 'phone', v_person.phone, 'email', v_person.email, 'rating', v_rating),
+    'person', json_build_object(
+      'id', v_person.id, 'name', v_person.name, 'phone', v_person.phone, 'email', v_person.email,
+      'bmc_subscription_active', v_person.bmc_subscription_active,
+      'bmc_last_payment_date', v_person.bmc_last_payment_date,
+      'project_buymeacoffee_link', (select value from app_settings where key = 'buymeacoffee_link'),
+      'rating', v_rating
+    ),
     'trips', v_trips
   );
 end;
@@ -312,6 +382,9 @@ declare
   v_car_notes       text;
   v_closed          boolean;
   v_driver_id       uuid;
+  v_driver_name     text;
+  v_driver_phone    text;
+  v_driver_email    text;
   v_driver_payment  text;
   v_max_order       int;
   v_route_price     int;
@@ -324,8 +397,8 @@ begin
     return json_build_object('error', 'invalid_token');
   end if;
 
-  select tr.route_id, tr.total_seats, c.name, c.notes, tr.closed, tr.driver_id, d.payment_info
-    into v_route_id, v_total, v_car_name, v_car_notes, v_closed, v_driver_id, v_driver_payment
+  select tr.route_id, tr.total_seats, c.name, c.notes, tr.closed, tr.driver_id, d.name, d.phone, d.email, d.payment_info
+    into v_route_id, v_total, v_car_name, v_car_notes, v_closed, v_driver_id, v_driver_name, v_driver_phone, v_driver_email, v_driver_payment
   from trips tr
   left join cars c on c.id = tr.car_id
   left join drivers d on d.id = tr.driver_id
@@ -388,6 +461,9 @@ begin
     'car_name', v_car_name,
     'car_notes', v_car_notes,
     'closed', v_closed,
+    'driver_name', v_driver_name,
+    'driver_phone', v_driver_phone,
+    'driver_email', v_driver_email,
     'driver_payment_info', v_driver_payment,
     'driver_rating', v_rating,
     'stops', v_stops,
@@ -512,6 +588,7 @@ begin
            tr.id as trip_id, tr.trip_date, tr.start_time,
            r.name as route_name,
            c.name as car_name, c.notes as car_notes,
+           d.name as driver_name, d.phone as driver_phone, d.email as driver_email,
            fs.name as from_stop, ts.name as to_stop,
            (tr.trip_date <= current_date and tr.driver_id is not null) as can_rate,
            dr.rating_experience, dr.rating_punctuality, dr.rating_driving,
@@ -545,6 +622,7 @@ begin
     join trips tr on tr.id = bk.trip_id
     join routes r on r.id = tr.route_id
     left join cars c on c.id = tr.car_id
+    left join drivers d on d.id = tr.driver_id
     join route_stops fs on fs.id = bk.from_stop_id
     join route_stops ts on ts.id = bk.to_stop_id
     left join driver_ratings dr on dr.booking_id = bk.id
@@ -678,6 +756,7 @@ begin
   select coalesce(json_agg(t order by t.trip_date, t.start_time), '[]'::json) into v_trips
   from (
     select tr.id, tr.trip_date, tr.start_time, tr.total_seats, tr.closed,
+           tr.route_id, tr.car_id,
            r.name as route_name, c.name as car_name, c.notes as car_notes,
            coalesce((select sum(b.seats) from bookings b where b.trip_id = tr.id and not b.cancelled), 0) as seats_booked,
            (
@@ -712,6 +791,9 @@ begin
       'payment_info', v_driver.payment_info,
       'reference_currency', v_driver.reference_currency,
       'rate_eur_per_100km', v_driver.rate_eur_per_100km,
+      'bmc_subscription_active', v_driver.bmc_subscription_active,
+      'bmc_last_payment_date', v_driver.bmc_last_payment_date,
+      'project_buymeacoffee_link', (select value from app_settings where key = 'buymeacoffee_link'),
       'rating', v_rating
     ),
     'trips', v_trips
@@ -736,6 +818,7 @@ as $$
 declare
   v_driver  drivers%rowtype;
   v_trip_id uuid;
+  v_valid_until date;
 begin
   select * into v_driver from drivers where invite_token = p_token and not revoked;
   if not found then
@@ -751,6 +834,19 @@ begin
 
   if not exists (select 1 from cars where id = p_car_id and driver_id = v_driver.id) then
     return json_build_object('error', 'car_not_owned');
+  end if;
+
+  if not coalesce(v_driver.bmc_subscription_active, false) then
+    return json_build_object('error', 'subscription_inactive');
+  end if;
+
+  if v_driver.bmc_last_payment_date is null then
+    return json_build_object('error', 'no_payment_recorded');
+  end if;
+
+  v_valid_until := v_driver.bmc_last_payment_date + 40;
+  if p_date > v_valid_until then
+    return json_build_object('error', 'trip_date_out_of_window', 'valid_until', v_valid_until);
   end if;
 
   insert into trips (route_id, car_id, driver_id, trip_date, start_time, total_seats)
@@ -1347,7 +1443,12 @@ begin
     return json_build_object('error', 'cannot_remove_endpoint');
   end if;
 
-  delete from route_stops where id = p_stop_id;
+  begin
+    delete from route_stops where id = p_stop_id;
+  exception
+    when foreign_key_violation then
+      return json_build_object('error', 'stop_in_use');
+  end;
 
   for r in select id from route_stops where route_id = v_route_id order by order_index loop
     update route_stops set order_index = v_new_index where id = r.id;
@@ -1703,3 +1804,241 @@ end;
 $$;
 
 grant execute on function fn_driver_submit_person_rating(text, uuid, integer, integer, integer) to anon;
+
+-- ----------------------------------------------------------------------------
+-- Mitfahrer: eigenen Suchauftrag speichern ("Informiere mich, wenn neue
+-- Fahrten eingestellt werden")
+-- ----------------------------------------------------------------------------
+create or replace function fn_create_search_alert(
+  p_token       text,
+  p_start_lat   numeric,
+  p_start_lon   numeric,
+  p_start_label text,
+  p_dest_lat    numeric,
+  p_dest_lon    numeric,
+  p_dest_label  text
+)
+returns json
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_person people%rowtype;
+begin
+  select * into v_person from people where invite_token = p_token and not revoked;
+  if not found then
+    return json_build_object('error', 'invalid_token');
+  end if;
+
+  if p_start_lat is null or p_start_lon is null or p_dest_lat is null or p_dest_lon is null then
+    return json_build_object('error', 'missing_coords');
+  end if;
+
+  insert into search_alerts (person_id, start_lat, start_lon, start_label, dest_lat, dest_lon, dest_label)
+  values (v_person.id, p_start_lat, p_start_lon, p_start_label, p_dest_lat, p_dest_lon, p_dest_label);
+
+  return json_build_object('success', true);
+end;
+$$;
+
+grant execute on function fn_create_search_alert(text, numeric, numeric, text, numeric, numeric, text) to anon;
+
+-- ----------------------------------------------------------------------------
+-- Fahrer: nach dem Veröffentlichen einer eigenen Fahrt herausfinden, welche
+-- gespeicherten Suchaufträge dazu passen (für den E-Mail-Versand im Frontend)
+-- ----------------------------------------------------------------------------
+create or replace function fn_driver_find_matching_alerts(p_token text, p_trip_id uuid)
+returns json
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_driver   drivers%rowtype;
+  v_route_id uuid;
+  v_owner    uuid;
+  v_result   json;
+begin
+  select * into v_driver from drivers where invite_token = p_token and not revoked;
+  if not found then
+    return json_build_object('error', 'invalid_token');
+  end if;
+
+  select route_id, driver_id into v_route_id, v_owner from trips where id = p_trip_id;
+  if v_owner is null or v_owner <> v_driver.id then
+    return json_build_object('error', 'not_your_trip');
+  end if;
+
+  select coalesce(json_agg(json_build_object('email', p.email, 'name', p.name)), '[]'::json)
+  into v_result
+  from search_alerts sa
+  join people p on p.id = sa.person_id and p.email is not null and not p.revoked
+  where exists (
+    select 1
+    from route_stops rs_start
+    where rs_start.route_id = v_route_id
+      and rs_start.latitude is not null and rs_start.longitude is not null
+      and fn_haversine_km(sa.start_lat, sa.start_lon, rs_start.latitude, rs_start.longitude) <= sa.radius_km
+      and exists (
+        select 1 from route_stops rs_dest
+        where rs_dest.route_id = v_route_id
+          and rs_dest.latitude is not null and rs_dest.longitude is not null
+          and rs_dest.order_index > rs_start.order_index
+          and fn_haversine_km(sa.dest_lat, sa.dest_lon, rs_dest.latitude, rs_dest.longitude) <= sa.radius_km
+      )
+  );
+
+  return json_build_object('matches', v_result);
+end;
+$$;
+
+grant execute on function fn_driver_find_matching_alerts(text, uuid) to anon;
+
+-- ----------------------------------------------------------------------------
+-- Fahrer: Stopp-Details einer BELIEBIGEN Strecke lesen (für die
+-- Entfernungsberechnung beim Veröffentlichen nötig — Geocoding läuft im
+-- Frontend, dafür werden die Adressfelder gebraucht)
+-- ----------------------------------------------------------------------------
+create or replace function fn_driver_get_route_stops_for_publish(p_token text, p_route_id uuid)
+returns json
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_driver drivers%rowtype;
+  v_stops  json;
+  v_total_price int;
+begin
+  select * into v_driver from drivers where invite_token = p_token and not revoked;
+  if not found then
+    return json_build_object('error', 'invalid_token');
+  end if;
+
+  select total_price into v_total_price from routes where id = p_route_id;
+  if not found then
+    return json_build_object('error', 'route_not_found');
+  end if;
+
+  select coalesce(json_agg(
+    json_build_object(
+      'id', id, 'name', name, 'order_index', order_index,
+      'postal_code', postal_code, 'street', street, 'house_number', house_number, 'country', country,
+      'latitude', latitude, 'longitude', longitude,
+      'distance_to_next_km', distance_to_next_km, 'price_to_next', price_to_next
+    ) order by order_index
+  ), '[]'::json)
+  into v_stops
+  from route_stops where route_id = p_route_id;
+
+  return json_build_object('stops', v_stops, 'total_price', v_total_price);
+end;
+$$;
+
+grant execute on function fn_driver_get_route_stops_for_publish(text, uuid) to anon;
+
+-- ----------------------------------------------------------------------------
+-- Fahrer: berechnete Koordinaten/Entfernungen/Standardpreise für eine
+-- BELIEBIGE Strecke speichern (kein Ownership-Check — bewusst nur für diesen
+-- engen Zweck, keine sonstigen Änderungen an der Strecke möglich)
+-- ----------------------------------------------------------------------------
+create or replace function fn_driver_save_computed_distances(
+  p_token           text,
+  p_route_id        uuid,
+  p_stops           jsonb,
+  p_new_total_price integer default null
+)
+returns json
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_driver drivers%rowtype;
+  v_stop   jsonb;
+begin
+  select * into v_driver from drivers where invite_token = p_token and not revoked;
+  if not found then
+    return json_build_object('error', 'invalid_token');
+  end if;
+
+  if not exists (select 1 from routes where id = p_route_id) then
+    return json_build_object('error', 'route_not_found');
+  end if;
+
+  for v_stop in select * from jsonb_array_elements(p_stops)
+  loop
+    update route_stops
+    set latitude             = coalesce((v_stop->>'latitude')::numeric, latitude),
+        longitude            = coalesce((v_stop->>'longitude')::numeric, longitude),
+        distance_to_next_km  = case when v_stop ? 'distance_to_next_km' then (v_stop->>'distance_to_next_km')::numeric else distance_to_next_km end,
+        duration_to_next_min = case when v_stop ? 'duration_to_next_min' then (v_stop->>'duration_to_next_min')::integer else duration_to_next_min end,
+        price_to_next        = case when v_stop ? 'price_to_next' then (v_stop->>'price_to_next')::integer else price_to_next end
+    where id = (v_stop->>'id')::uuid and route_id = p_route_id;
+  end loop;
+
+  if p_new_total_price is not null then
+    update routes set total_price = p_new_total_price where id = p_route_id and coalesce(total_price, 0) = 0;
+  end if;
+
+  return json_build_object('success', true);
+end;
+$$;
+
+grant execute on function fn_driver_save_computed_distances(text, uuid, jsonb, integer) to anon;
+
+-- ----------------------------------------------------------------------------
+-- Mitfahrer: eigene gespeicherte Suchaufträge einsehen und löschen
+-- ----------------------------------------------------------------------------
+create or replace function fn_list_my_search_alerts(p_token text)
+returns json
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_person people%rowtype;
+  v_result json;
+begin
+  select * into v_person from people where invite_token = p_token and not revoked;
+  if not found then
+    return json_build_object('error', 'invalid_token');
+  end if;
+
+  select coalesce(json_agg(
+    json_build_object(
+      'id', id, 'start_label', start_label, 'dest_label', dest_label,
+      'radius_km', radius_km, 'created_at', created_at
+    ) order by created_at desc
+  ), '[]'::json)
+  into v_result
+  from search_alerts where person_id = v_person.id;
+
+  return json_build_object('alerts', v_result);
+end;
+$$;
+
+grant execute on function fn_list_my_search_alerts(text) to anon;
+
+create or replace function fn_delete_search_alert(p_token text, p_alert_id uuid)
+returns json
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_person people%rowtype;
+begin
+  select * into v_person from people where invite_token = p_token and not revoked;
+  if not found then
+    return json_build_object('error', 'invalid_token');
+  end if;
+
+  delete from search_alerts where id = p_alert_id and person_id = v_person.id;
+
+  return json_build_object('success', true);
+end;
+$$;
+
+grant execute on function fn_delete_search_alert(text, uuid) to anon;

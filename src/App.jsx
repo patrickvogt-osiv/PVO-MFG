@@ -5,6 +5,7 @@ import InvitePage from './pages/InvitePage'
 import DriverPage from './pages/DriverPage'
 import AdminLogin from './pages/AdminLogin'
 import AdminDashboard from './pages/AdminDashboard'
+import ImpressumPage from './pages/ImpressumPage'
 
 function AdminArea() {
   const [session, setSession] = useState(undefined) // undefined = wird geladen
@@ -26,6 +27,7 @@ export default function App() {
       <Route path="/invite/:token" element={<InvitePage />} />
       <Route path="/driver/:token" element={<DriverPage />} />
       <Route path="/admin" element={<AdminArea />} />
+      <Route path="/impressum" element={<ImpressumPage />} />
       <Route path="/" element={<InvitePage />} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

@@ -18,3 +18,13 @@
   from = "/*"
   to = "/index.html"
   status = 200
+
+# Hinweis: Netlify hat zusätzlich ein neueres "Secret scanning with smart
+# detection"-Feature (auf bezahlten Plänen automatisch aktiv), das UNABHÄNGIG
+# von SECRETS_SCAN_OMIT_KEYS oben läuft und bei denselben drei Werten erneut
+# anschlagen kann. Falls das passiert: im Netlify-Dashboard unter
+# Project configuration → Environment variables eine Variable
+# SECRETS_SCAN_SMART_DETECTION_OMIT_VALUES anlegen und dort die drei
+# tatsächlichen Werte (nicht die Variablennamen!) kommagetrennt eintragen.
+# Diese Werte gehören NICHT in diese Datei, da sie pro Deployment
+# unterschiedlich sind und diese Datei versioniert wird.

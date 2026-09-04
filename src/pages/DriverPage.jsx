@@ -1,13 +1,70 @@
-import { useEffect, useState, useCallback } from 'react'
-import { useParams } from 'react-router-dom'
+import { useEffect, useState, useCallback, useRef } from 'react'
+import { useParams, Link } from 'react-router-dom'
 import { supabase } from '../lib/supabaseClient'
 import { getEuroExchangeRate, formatConverted } from '../lib/currency'
+import Logo from '../components/Logo'
 
 const TOKEN_STORAGE_KEY = 'fahrt-buchung:driver-token'
 
 function formatDate(dateStr) {
   const d = new Date(dateStr + 'T00:00:00')
   return d.toLocaleDateString('de-DE', { weekday: 'short', day: '2-digit', month: '2-digit', year: 'numeric' })
+}
+
+// Offizieller Buy-Me-a-Coffee-Button (öffentlich zum Einbetten gedacht),
+// immer im Original angezeigt. Darunter ein Statustext mit Icon, je nachdem
+// ob das Abo aktiv ist. Klick führt immer zum Projekt-Link (falls
+// hinterlegt), sonst zu den Einstellungen.
+function BuyMeACoffeeBadge({ active, projectLink, onGoToSettings }) {
+  const img = (
+    <img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me a Coffee" />
+  )
+  const button = projectLink ? (
+    <a href={projectLink} target="_blank" rel="noreferrer" className="bmc-badge" title="Buy Me a Coffee">
+      {img}
+    </a>
+  ) : (
+    <button
+      type="button"
+      className="bmc-badge"
+      onClick={onGoToSettings}
+      title="Buy Me a Coffee — noch kein Projekt-Link hinterlegt"
+    >
+      {img}
+    </button>
+  )
+  return (
+    <div className="bmc-badge-wrapper">
+      {button}
+      <div className="bmc-status">
+        {active ? (
+          <>✅ Danke - Abo ist aktiv!</>
+        ) : (
+          <>❌ Kein Abo aktiv!</>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// Schickt eine E-Mail über die Supabase Edge Function "send-email" (SMTP im
+// Hintergrund). Schlägt der Versand fehl, wird das nur geloggt.
+async function sendEmailNotification(to, subject, text) {
+  if (!to) {
+    console.log('[E-Mail] Übersprungen — keine Empfängeradresse vorhanden.', { subject })
+    return
+  }
+  console.log('[E-Mail] Sende-Versuch gestartet.', { to, subject })
+  try {
+    const { data, error } = await supabase.functions.invoke('send-email', { body: { to, subject, text } })
+    if (error) {
+      console.error('[E-Mail] Function meldete einen Fehler:', error, { to, subject })
+    } else {
+      console.log('[E-Mail] Erfolgreich ausgelöst, Antwort:', data, { to, subject })
+    }
+  } catch (err) {
+    console.error('[E-Mail] Aufruf ist fehlgeschlagen, bevor eine Antwort kam (Netzwerk/CORS/falsche Zugangsdaten?):', err, { to, subject })
+  }
 }
 
 function formatTime(timeStr) {
@@ -416,7 +473,16 @@ function DriverRoutesManager({ token, onRoutesChanged, driverRate }) {
 
   async function removeStop(stop) {
     if (!confirm(`„${stop.name}" wirklich entfernen?`)) return
-    await supabase.rpc('fn_driver_remove_stop', { p_token: token, p_stop_id: stop.id })
+    setSaveError(null)
+    const { data, error: err } = await supabase.rpc('fn_driver_remove_stop', { p_token: token, p_stop_id: stop.id })
+    if (err || data?.error) {
+      if (data?.error === 'stop_in_use') {
+        setSaveError(`„${stop.name}" kann nicht gelöscht werden, da bereits mindestens eine Buchung diesen Ein-/Ausstiegspunkt nutzt. Storniere zuerst die betreffenden Buchungen.`)
+      } else {
+        setSaveError('Zwischenstopp konnte nicht gelöscht werden.')
+      }
+      return
+    }
     openRouteDetail(openRoute)
   }
 
@@ -641,6 +707,8 @@ export default function DriverPage() {
   const [seats, setSeats] = useState(3)
   const [publishMsg, setPublishMsg] = useState(null)
   const [busy, setBusy] = useState(false)
+  const [calcStatus, setCalcStatus] = useState(null)
+  const [copyTemplate, setCopyTemplate] = useState(null)
 
   const [openTripBookings, setOpenTripBookings] = useState(null)
   const [tripBookings, setTripBookings] = useState([])
@@ -741,7 +809,70 @@ export default function DriverPage() {
     setDriverEmail(tripsRes.data.driver?.email || '')
     setReferenceCurrency(tripsRes.data.driver?.reference_currency || '')
     setRatePer100km(tripsRes.data.driver?.rate_eur_per_100km ?? '')
+
+    const map = {}
+    for (const t of tripsRes.data.trips || []) map[t.id] = t.seats_booked
+    bookedSeatsRef.current = map
   }, [token])
+
+  // Fragt im Hintergrund alle 20 Sekunden nach neuen Buchungen, ohne die
+  // Seite neu zu laden oder einen Ladezustand zu zeigen. Bei neuen Buchungen
+  // erscheint ein In-App-Hinweis, plus eine Browser-Benachrichtigung, falls
+  // dafür die Erlaubnis erteilt wurde.
+  const bookedSeatsRef = useRef({})
+  const [notifications, setNotifications] = useState([])
+
+  const pollForNewBookings = useCallback(async () => {
+    if (!token) return
+    const { data } = await supabase.rpc('fn_driver_list_trips', { p_token: token })
+    if (!data || data.error) return
+    const newTrips = data.trips || []
+    const prev = bookedSeatsRef.current
+    const fresh = []
+
+    for (const t of newTrips) {
+      const prevCount = prev[t.id]
+      if (prevCount != null && t.seats_booked > prevCount) {
+        const diff = t.seats_booked - prevCount
+        const text = `🔔 Neue Buchung: ${diff} Platz/Plätze mehr bei „${t.route_name}" (${formatDate(t.trip_date)}).`
+        fresh.push({ id: `${t.id}-${Date.now()}`, text })
+        if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+          new Notification('pickaride — neue Buchung', {
+            body: `${diff} Platz/Plätze mehr bei „${t.route_name}" am ${formatDate(t.trip_date)}.`,
+          })
+        }
+      }
+    }
+
+    const nextMap = {}
+    for (const t of newTrips) nextMap[t.id] = t.seats_booked
+    bookedSeatsRef.current = nextMap
+    setTrips(newTrips)
+
+    if (fresh.length > 0) {
+      setNotifications((old) => [...old, ...fresh])
+      fresh.forEach((n) => {
+        setTimeout(() => setNotifications((old) => old.filter((x) => x.id !== n.id)), 12000)
+      })
+    }
+  }, [token])
+
+  useEffect(() => {
+    if (!token) return
+    const interval = setInterval(pollForNewBookings, 20000)
+    return () => clearInterval(interval)
+  }, [token, pollForNewBookings])
+
+  const [notificationPermission, setNotificationPermission] = useState(
+    typeof Notification !== 'undefined' ? Notification.permission : 'unsupported'
+  )
+
+  async function requestNotificationPermission() {
+    if (typeof Notification === 'undefined') return
+    const result = await Notification.requestPermission()
+    setNotificationPermission(result)
+  }
+
 
   useEffect(() => {
     let cancelled = false
@@ -778,11 +909,78 @@ export default function DriverPage() {
 
   useEffect(() => { loadAll() }, [loadAll])
 
+  // Prüft vor dem Veröffentlichen, ob für die gewählte Strecke bereits
+  // Entfernungen berechnet wurden — falls nicht, wird das automatisch
+  // nachgeholt (Geocoding + Routing), unabhängig davon, wem die Strecke
+  // gehört. Schlägt das fehl (z.B. Adresse nicht auffindbar), wird die
+  // Fahrt trotzdem veröffentlicht — nur eben ohne Entfernungen, wie bisher.
+  async function ensureRouteDistances(routeIdToCheck) {
+    const { data } = await supabase.rpc('fn_driver_get_route_stops_for_publish', {
+      p_token: token, p_route_id: routeIdToCheck,
+    })
+    const stops = data?.stops || []
+    if (stops.length < 2) return
+    const needsCalc = stops.some((s, i) =>
+      s.latitude == null || s.longitude == null || (i < stops.length - 1 && !s.distance_to_next_km)
+    )
+    if (!needsCalc) return
+
+    setCalcStatus('Entfernungen für die gewählte Strecke werden berechnet …')
+    try {
+      const coords = []
+      for (const s of stops) {
+        const address = [s.street, s.house_number, s.postal_code, s.name, s.country].filter(Boolean).join(', ')
+        const res = await fetch(`https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${encodeURIComponent(address || s.name)}`)
+        const json = await res.json()
+        if (!json || json.length === 0) return
+        coords.push({ lat: parseFloat(json[0].lat), lon: parseFloat(json[0].lon) })
+        await new Promise((r) => setTimeout(r, 1000))
+      }
+
+      const coordsStr = coords.map((c) => `${c.lon},${c.lat}`).join(';')
+      const osrmRes = await fetch(`https://router.project-osrm.org/route/v1/driving/${coordsStr}?overview=false`)
+      const osrmData = await osrmRes.json()
+      if (!osrmData?.routes?.length) return
+      const legs = osrmData.routes[0].legs
+
+      const rate = driver?.rate_eur_per_100km ?? null
+      let totalDistance = 0
+      const stopPatches = []
+      for (let i = 0; i < stops.length; i++) {
+        const patch = { id: stops[i].id, latitude: coords[i].lat, longitude: coords[i].lon }
+        if (i < legs.length) {
+          const distanceKm = Math.round((legs[i].distance / 1000) * 10) / 10
+          patch.distance_to_next_km = distanceKm
+          patch.duration_to_next_min = Math.round(legs[i].duration / 60)
+          totalDistance += distanceKm
+          if (rate != null && !stops[i].price_to_next) {
+            patch.price_to_next = Math.round((rate * distanceKm) / 100)
+          }
+        }
+        stopPatches.push(patch)
+      }
+
+      const newTotalPrice = rate != null && !data.total_price ? Math.round((rate * totalDistance) / 100) : null
+
+      await supabase.rpc('fn_driver_save_computed_distances', {
+        p_token: token,
+        p_route_id: routeIdToCheck,
+        p_stops: stopPatches,
+        p_new_total_price: newTotalPrice,
+      })
+    } catch {
+      // Adressdienst nicht erreichbar o.ä. — Fahrt wird trotzdem veröffentlicht.
+    } finally {
+      setCalcStatus(null)
+    }
+  }
+
   async function publishTrip(e) {
     e.preventDefault()
     if (!routeId || !carId || !date || !time || !seats) return
     setBusy(true)
     setPublishMsg(null)
+    await ensureRouteDistances(routeId)
     const { data, error: err } = await supabase.rpc('fn_driver_create_trip', {
       p_token: token,
       p_route_id: routeId,
@@ -793,11 +991,37 @@ export default function DriverPage() {
     })
     setBusy(false)
     if (err || data?.error) {
-      setPublishMsg({ type: 'error', text: 'Fahrt konnte nicht veröffentlicht werden.' })
+      const messages = {
+        subscription_inactive: 'Fahrten veröffentlichen ist nur mit aktivem Buy-Me-a-Coffee-Abo möglich. Bitte Abo abschliessen.',
+        no_payment_recorded: 'Für dein Abo ist noch kein Zahldatum hinterlegt. Bitte beim Admin melden.',
+        trip_date_out_of_window: `Das Fahrtdatum liegt zu weit in der Zukunft. Mit der letzten Zahlung kannst du Fahrten bis einschliesslich ${data?.valid_until ? formatDate(data.valid_until) : '(unbekannt)'} veröffentlichen.`,
+        car_not_owned: 'Dieses Auto gehört nicht zu deinem Konto.',
+      }
+      setPublishMsg({ type: 'error', text: messages[data?.error] || 'Fahrt konnte nicht veröffentlicht werden.' })
       return
     }
     setPublishMsg({ type: 'success', text: 'Fahrt veröffentlicht!' })
+
+    const routeName = routes.find((r) => r.id === routeId)?.name || 'deine Strecke'
+    const { data: matchData } = await supabase.rpc('fn_driver_find_matching_alerts', {
+      p_token: token,
+      p_trip_id: data.trip_id,
+    })
+    for (const m of matchData?.matches || []) {
+      sendEmailNotification(
+        m.email,
+        `Neue Fahrt in deiner Umgebung: ${routeName}`,
+        [
+          `Hallo ${m.name || ''}!`.replace('Hallo !', 'Hallo!'),
+          `Es wurde soeben eine neue Fahrt veröffentlicht, die zu deiner gespeicherten Suche passt:`,
+          `${routeName} am ${formatDate(date)} (${time} Uhr)`,
+          `Schau in der App vorbei, um einen Platz zu buchen!`,
+        ].join('\n')
+      )
+    }
+
     setRouteId(''); setCarId(''); setDate(''); setTime(''); setSeats(3)
+    setCopyTemplate(null)
     loadAll()
   }
 
@@ -805,6 +1029,21 @@ export default function DriverPage() {
     if (!confirm('Fahrt inkl. aller Buchungen löschen?')) return
     await supabase.rpc('fn_driver_delete_trip', { p_token: token, p_trip_id: id })
     loadAll()
+  }
+
+  // Befüllt das "Fahrt veröffentlichen"-Formular mit Strecke und Auto der
+  // gewählten Fahrt (egal ob bevorstehend oder vergangen). Datum/Zeit bleiben
+  // leer zum Eintragen, nur die Sitzplätze werden aus der Vorlage übernommen.
+  function copyTrip(t) {
+    setTab('trips')
+    setRouteId(t.route_id)
+    setCarId(t.car_id)
+    setDate('')
+    setTime('')
+    setSeats(t.total_seats)
+    setPublishMsg(null)
+    setCopyTemplate(t)
+    window.scrollTo({ top: 0, behavior: 'smooth' })
   }
 
   async function showBookings(trip) {
@@ -837,7 +1076,7 @@ export default function DriverPage() {
     return (
       <>
         <div className="app-header">
-          <h1>Meine Fahrten</h1>
+          <Logo height={36} />
           <p>Hallo {driver?.name} 👋</p>
         </div>
         <div className="container">
@@ -882,14 +1121,33 @@ export default function DriverPage() {
     )
   }
 
+  const bmcValidUntil = driver?.bmc_last_payment_date
+    ? new Date(new Date(driver.bmc_last_payment_date).getTime() + 40 * 86400000)
+    : null
+  const canPublishTrip = Boolean(
+    driver?.bmc_subscription_active && bmcValidUntil && bmcValidUntil >= new Date(new Date().toDateString())
+  )
+
   return (
     <>
       <div className="app-header">
-        <h1>Meine Fahrten</h1>
-        <p>Hallo {driver?.name} 👋</p>
+        <div className="app-header-text">
+          <Logo height={36} />
+          <p>Hallo {driver?.name} 👋</p>
+        </div>
+        <BuyMeACoffeeBadge active={driver?.bmc_subscription_active} projectLink={driver?.project_buymeacoffee_link} onGoToSettings={() => setTab('settings')} />
       </div>
 
       <div className="container">
+        {notifications.length > 0 && (
+          <div style={{ marginBottom: 12 }}>
+            {notifications.map((n) => (
+              <div key={n.id} className="notice success" style={{ marginBottom: 8 }}>
+                {n.text}
+              </div>
+            ))}
+          </div>
+        )}
         <div className="tabs">
           <button className={tab === 'trips' ? 'active' : ''} onClick={() => setTab('trips')}>Meine Fahrten</button>
           <button className={tab === 'routes' ? 'active' : ''} onClick={() => setTab('routes')}>Meine Strecken</button>
@@ -900,6 +1158,32 @@ export default function DriverPage() {
         {tab === 'settings' && (
           <div className="card">
             <h3>⚙️ Meine Einstellungen</h3>
+
+            <div style={{ margin: '10px 0', padding: '10px 12px', background: '#f0f2f4', borderRadius: 10 }}>
+              <div className="meta" style={{ fontWeight: 600, marginBottom: 4 }}>🔔 Benachrichtigungen bei neuen Buchungen</div>
+              {notificationPermission === 'granted' && (
+                <div className="meta">Aktiviert — solange diese Seite offen ist, meldet sich dein Browser bei neuen Buchungen.</div>
+              )}
+              {notificationPermission === 'denied' && (
+                <div className="meta">Blockiert. Bitte in den Browser-Einstellungen für diese Seite erlauben.</div>
+              )}
+              {notificationPermission === 'default' && (
+                <>
+                  <div className="meta" style={{ marginBottom: 8 }}>
+                    Noch nicht aktiviert. Ohne das siehst du neue Buchungen trotzdem als Hinweis oben auf der Seite,
+                    solange sie geöffnet ist — mit Browser-Benachrichtigungen bekommst du es auch mit, wenn ein
+                    anderer Tab aktiv ist.
+                  </div>
+                  <button className="secondary" style={{ width: '100%' }} onClick={requestNotificationPermission}>
+                    Browser-Benachrichtigungen aktivieren
+                  </button>
+                </>
+              )}
+              {notificationPermission === 'unsupported' && (
+                <div className="meta">Dieser Browser unterstützt keine Benachrichtigungen.</div>
+              )}
+            </div>
+
             <div style={{ margin: '10px 0', padding: '10px 12px', background: '#f0f2f4', borderRadius: 10 }}>
               <div className="meta" style={{ marginBottom: 4, fontWeight: 600 }}>Deine Bewertungen</div>
               {driver?.rating?.count
@@ -919,8 +1203,11 @@ export default function DriverPage() {
             </div>
             <form onSubmit={saveSettings} style={{ marginTop: 12 }}>
               <label>Mobilnummer</label>
-              <input type="tel" value={driverPhone} onChange={(e) => setDriverPhone(e.target.value)} placeholder="z.B. 079 123 45 67" />
-              <label>E-Mail</label>
+              <input type="tel" value={driverPhone} onChange={(e) => setDriverPhone(e.target.value)} placeholder="z.B. +41 79 123 45 67" />
+              <div className="meta" style={{ marginTop: -8, marginBottom: 10 }}>
+                Bitte mit Ländervorwahl (z.B. +41) angeben, damit der WhatsApp-Kontakt-Link für Mitfahrer korrekt funktioniert.
+              </div>
+              <label>E-Mail (auch bei Buy Me a Coffee verwenden)</label>
               <input type="email" value={driverEmail} onChange={(e) => setDriverEmail(e.target.value)} placeholder="deine@email.ch" />
               <label>Zahlungshinweis/-link</label>
               <input
@@ -928,6 +1215,16 @@ export default function DriverPage() {
                 onChange={(e) => setPaymentInfo(e.target.value)}
                 placeholder="z.B. paypal.me/deinname oder 'Twint an 079 123 45 67'"
               />
+              <div style={{ margin: '10px 0', padding: '10px 12px', background: '#f0f2f4', borderRadius: 10 }}>
+                <div className="meta" style={{ fontWeight: 600, marginBottom: 4 }}>☕ Buy Me a Coffee</div>
+                <div className="meta">
+                  Status: {driver?.bmc_subscription_active ? 'aktiv' : 'nicht aktiv'}
+                  {driver?.bmc_last_payment_date && ` · letztes Zahldatum ${driver.bmc_last_payment_date}`}
+                </div>
+                <div className="meta" style={{ marginTop: 2, fontStyle: 'italic' }}>
+                  Wird vom Admin gepflegt, sobald die Unterstützung aktiv ist.
+                </div>
+              </div>
               <label>Referenzwährung (ISO 4217)</label>
               <input
                 value={referenceCurrency}
@@ -971,9 +1268,39 @@ export default function DriverPage() {
           <>
             <div className="card">
               <h3>Fahrt veröffentlichen</h3>
+              {copyTemplate && (
+                <div className="notice" style={{ background: '#eef6f1', color: 'var(--color-primary-dark)', marginBottom: 10 }}>
+                  📋 Kopiert von "{copyTemplate.route_name}" ({formatDate(copyTemplate.trip_date)}) — bitte Datum, Startzeit und
+                  Plätze prüfen/anpassen.{' '}
+                  <button
+                    type="button"
+                    className="secondary"
+                    style={{ padding: '2px 8px', marginLeft: 6 }}
+                    onClick={() => { setCopyTemplate(null); setRouteId(''); setCarId(''); setSeats(3) }}
+                  >
+                    Vorlage entfernen
+                  </button>
+                </div>
+              )}
               {(cars.length === 0 || routes.length === 0) && (
                 <div className="notice error">Es sind noch keine Strecken oder Autos hinterlegt. Bitte den Admin fragen.</div>
               )}
+              {(() => {
+                if (canPublishTrip) {
+                  return (
+                    <div className="meta" style={{ marginBottom: 10 }}>
+                      ✅ Abo aktiv — Fahrten veröffentlichbar bis einschliesslich {formatDate(bmcValidUntil.toISOString().slice(0, 10))}.
+                    </div>
+                  )
+                }
+                return (
+                  <div className="notice error" style={{ marginBottom: 10 }}>
+                    {!driver?.bmc_subscription_active
+                      ? 'Fahrten veröffentlichen ist nur mit aktivem Buy-Me-a-Coffee-Abo möglich. Bitte im Tab „Einstellungen" prüfen bzw. das Abo abschliessen.'
+                      : `Dein Abo-Zeitraum ist abgelaufen${bmcValidUntil ? ` (gültig bis ${formatDate(bmcValidUntil.toISOString().slice(0, 10))})` : ''}. Bitte die nächste Zahlung abschliessen.`}
+                  </div>
+                )
+              })()}
               <form onSubmit={publishTrip}>
                 <label>Strecke</label>
                 <select value={routeId} onChange={(e) => setRouteId(e.target.value)} required disabled={routes.length === 0}>
@@ -997,9 +1324,10 @@ export default function DriverPage() {
                 </div>
                 <label>Freie Plätze</label>
                 <input type="number" min="1" value={seats} onChange={(e) => setSeats(e.target.value)} required />
+                {calcStatus && <div className="meta" style={{ marginTop: 8 }}>📍 {calcStatus}</div>}
                 {publishMsg && <div className={`notice ${publishMsg.type}`} style={{ marginTop: 12 }}>{publishMsg.text}</div>}
-                <button style={{ marginTop: 12, width: '100%' }} disabled={busy || cars.length === 0 || routes.length === 0}>
-                  {busy ? 'Wird veröffentlicht …' : 'Veröffentlichen'}
+                <button style={{ marginTop: 12, width: '100%' }} disabled={busy || cars.length === 0 || routes.length === 0 || !canPublishTrip}>
+                  {calcStatus ? 'Berechne Entfernungen …' : busy ? 'Wird veröffentlicht …' : 'Veröffentlichen'}
                 </button>
               </form>
             </div>
@@ -1017,12 +1345,16 @@ export default function DriverPage() {
                 <div className="row">
                   <button onClick={() => showBookings(t)}>Mitfahrer ansehen</button>
                   <button className="secondary" onClick={() => toggleClosed(t)}>{t.closed ? 'Buchungen wieder zulassen' : 'Neue Buchungen blockieren'}</button>
+                  <button className="secondary" onClick={() => copyTrip(t)}>Kopieren</button>
                   <button className="danger" onClick={() => deleteTrip(t.id)}>Löschen</button>
                 </div>
               </div>
             ))}
           </>
         )}
+        <div style={{ textAlign: 'center', margin: '20px 0' }}>
+          <Link to="/impressum" target="_blank" style={{ fontSize: 13 }}>Impressum</Link>
+        </div>
       </div>
     </>
   )

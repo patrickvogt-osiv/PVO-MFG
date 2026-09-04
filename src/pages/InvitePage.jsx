@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback, useRef } from 'react'
-import { useParams, useNavigate } from 'react-router-dom'
+import { useParams, useNavigate, Link } from 'react-router-dom'
 import { supabase } from '../lib/supabaseClient'
+import Logo from '../components/Logo'
 
 const TOKEN_STORAGE_KEY = 'fahrt-buchung:invite-token'
 
@@ -16,6 +17,41 @@ function formatTime(timeStr) {
 function todayIso() {
   const d = new Date()
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
+// Baut einen wa.me-Link aus einer Telefonnummer. Funktioniert zuverlässig nur
+// bei internationalem Format (z.B. "+41 79 123 45 67") — wa.me braucht die
+// Nummer ohne führende 0, ohne Leerzeichen/Klammern, ohne "+".
+function whatsappLink(phone, message) {
+  if (!phone) return null
+  let digits = phone.replace(/[^\d+]/g, '')
+  if (digits.startsWith('+')) digits = digits.slice(1)
+  else if (digits.startsWith('00')) digits = digits.slice(2)
+  if (!digits) return null
+  const base = `https://wa.me/${digits}`
+  return message ? `${base}?text=${encodeURIComponent(message)}` : base
+}
+
+// Schickt eine E-Mail über die Supabase Edge Function "send-email" (SMTP im
+// Hintergrund). Schlägt der Versand fehl (z.B. Function noch nicht
+// eingerichtet), wird das nur geloggt — die Buchung selbst darf davon nicht
+// abhängen.
+async function sendEmailNotification(to, subject, text) {
+  if (!to) {
+    console.log('[E-Mail] Übersprungen — keine Empfängeradresse vorhanden.', { subject })
+    return
+  }
+  console.log('[E-Mail] Sende-Versuch gestartet.', { to, subject })
+  try {
+    const { data, error } = await supabase.functions.invoke('send-email', { body: { to, subject, text } })
+    if (error) {
+      console.error('[E-Mail] Function meldete einen Fehler:', error, { to, subject })
+    } else {
+      console.log('[E-Mail] Erfolgreich ausgelöst, Antwort:', data, { to, subject })
+    }
+  } catch (err) {
+    console.error('[E-Mail] Aufruf ist fehlgeschlagen, bevor eine Antwort kam (Netzwerk/CORS/falsche Zugangsdaten?):', err, { to, subject })
+  }
 }
 
 // Lädt Leaflet (OpenStreetMap-Kartenbibliothek) einmalig per CDN nach —
@@ -146,6 +182,42 @@ function StarDisplaySummary({ rating }) {
   )
 }
 
+// Offizieller Buy-Me-a-Coffee-Button (öffentlich zum Einbetten gedacht),
+// immer im Original angezeigt. Darunter ein Statustext mit Icon, je nachdem
+// ob das Abo aktiv ist. Klick führt immer zum Projekt-Link (falls
+// hinterlegt), sonst zu den Einstellungen.
+function BuyMeACoffeeBadge({ active, projectLink, onGoToSettings }) {
+  const img = (
+    <img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me a Coffee" />
+  )
+  const button = projectLink ? (
+    <a href={projectLink} target="_blank" rel="noreferrer" className="bmc-badge" title="Buy Me a Coffee">
+      {img}
+    </a>
+  ) : (
+    <button
+      type="button"
+      className="bmc-badge"
+      onClick={onGoToSettings}
+      title="Buy Me a Coffee — noch kein Projekt-Link hinterlegt"
+    >
+      {img}
+    </button>
+  )
+  return (
+    <div className="bmc-badge-wrapper">
+      {button}
+      <div className="bmc-status">
+        {active ? (
+          <>✅ Danke - Abo ist aktiv!</>
+        ) : (
+          <>❌ Kein Abo aktiv!</>
+        )}
+      </div>
+    </div>
+  )
+}
+
 function formatAddress(s) {
   if (!s) return ''
   const line1 = [s.postal_code, s.name].filter(Boolean).join(' ')
@@ -169,6 +241,17 @@ function guessCountryFromBrowser() {
 // API-Key, basiert auf OpenStreetMap-Daten und ist speziell für
 // Autovervollständigung mit Teilwörtern gebaut (im Gegensatz zu Nominatim,
 // das eher vollständige Ortsnamen erwartet).
+// Distanz zwischen zwei Koordinaten in km (Luftlinie), für die Umkreissuche.
+function haversineKm(lat1, lon1, lat2, lon2) {
+  const R = 6371
+  const dLat = ((lat2 - lat1) * Math.PI) / 180
+  const dLon = ((lon2 - lon1) * Math.PI) / 180
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos((lat1 * Math.PI) / 180) * Math.cos((lat2 * Math.PI) / 180) * Math.sin(dLon / 2) ** 2
+  return 2 * R * Math.asin(Math.sqrt(a))
+}
+
 async function fetchPlaceSuggestions(query) {
   if (!query || query.trim().length < 2) return []
   const url = `https://photon.komoot.io/api/?q=${encodeURIComponent(query)}&limit=8&lang=de`
@@ -188,8 +271,9 @@ async function fetchPlaceSuggestions(query) {
       const key = `${city}|${postcode}|${country}`
       if (!city || seen.has(key)) continue
       seen.add(key)
+      const [lon, lat] = f.geometry?.coordinates || [null, null]
       const label = postcode ? `${city} (${postcode}) – ${country}` : `${city} – ${country}`
-      results.push({ label, city, postcode, country })
+      results.push({ label, city, postcode, country, lat, lon })
     }
     return results.slice(0, 6)
   } catch {
@@ -221,6 +305,7 @@ export default function InvitePage() {
   const [toStop, setToStop] = useState('')
   const [seats, setSeats] = useState(1)
   const [bookingMsg, setBookingMsg] = useState(null)
+  const [lastBookingNotify, setLastBookingNotify] = useState(null)
   const [streckenverlaufOpen, setStreckenverlaufOpen] = useState(false)
 
   const [settingsPhone, setSettingsPhone] = useState('')
@@ -309,7 +394,14 @@ export default function InvitePage() {
   const [destCountryInput, setDestCountryInput] = useState('')
   const [dateInput, setDateInput] = useState('')
   const [flexDaysInput, setFlexDaysInput] = useState(0)
-  const [activeSearch, setActiveSearch] = useState({ city: '', country: '', destCity: '', destCountry: '', date: '', flexDays: 0 })
+  const [searchStartCoords, setSearchStartCoords] = useState(null)
+  const [searchDestCoords, setSearchDestCoords] = useState(null)
+  const [radiusKmStartInput, setRadiusKmStartInput] = useState(10)
+  const [radiusKmDestInput, setRadiusKmDestInput] = useState(10)
+  const [activeSearch, setActiveSearch] = useState({
+    city: '', country: '', destCity: '', destCountry: '', date: '', flexDays: 0,
+    startCoords: null, destCoords: null, startRadiusKm: 10, destRadiusKm: 10,
+  })
   const [hasSearched, setHasSearched] = useState(false)
 
   const [startSuggestions, setStartSuggestions] = useState([])
@@ -321,6 +413,7 @@ export default function InvitePage() {
 
   function handleStartCityChange(value) {
     setSearchCityInput(value)
+    setSearchStartCoords(null)
     setShowStartSuggestions(true)
     if (startDebounceRef.current) clearTimeout(startDebounceRef.current)
     startDebounceRef.current = setTimeout(async () => {
@@ -331,12 +424,14 @@ export default function InvitePage() {
   function selectStartSuggestion(s) {
     setSearchCityInput(s.city)
     setSearchCountryInput(s.country)
+    setSearchStartCoords(s.lat != null && s.lon != null ? { lat: s.lat, lon: s.lon } : null)
     setShowStartSuggestions(false)
     setStartSuggestions([])
   }
 
   function handleDestCityChange(value) {
     setDestCityInput(value)
+    setSearchDestCoords(null)
     setShowDestSuggestions(true)
     if (destDebounceRef.current) clearTimeout(destDebounceRef.current)
     destDebounceRef.current = setTimeout(async () => {
@@ -347,12 +442,14 @@ export default function InvitePage() {
   function selectDestSuggestion(s) {
     setDestCityInput(s.city)
     setDestCountryInput(s.country)
+    setSearchDestCoords(s.lat != null && s.lon != null ? { lat: s.lat, lon: s.lon } : null)
     setShowDestSuggestions(false)
     setDestSuggestions([])
   }
 
   function runSearch(e) {
     e?.preventDefault()
+    setAlertSaved(false)
     setActiveSearch({
       city: searchCityInput.trim(),
       country: searchCountryInput.trim(),
@@ -360,6 +457,10 @@ export default function InvitePage() {
       destCountry: destCountryInput.trim(),
       date: dateInput,
       flexDays: flexDaysInput,
+      startCoords: searchStartCoords,
+      destCoords: searchDestCoords,
+      startRadiusKm: radiusKmStartInput,
+      destRadiusKm: radiusKmDestInput,
     })
     setHasSearched(true)
   }
@@ -370,8 +471,28 @@ export default function InvitePage() {
     setDestCountryInput('')
     setDateInput('')
     setFlexDaysInput(0)
-    setActiveSearch({ city: '', country: '', destCity: '', destCountry: '', date: '', flexDays: 0 })
+    setSearchStartCoords(null)
+    setSearchDestCoords(null)
+    setRadiusKmStartInput(10)
+    setRadiusKmDestInput(10)
+    setActiveSearch({
+      city: '', country: '', destCity: '', destCountry: '', date: '', flexDays: 0,
+      startCoords: null, destCoords: null, startRadiusKm: 10, destRadiusKm: 10,
+    })
     setHasSearched(false)
+  }
+
+  // Ein Stopp gilt als Treffer, wenn der Name (+ ggf. Land) passt, ODER —
+  // falls ein Ort aus den Vorschlägen gewählt wurde — wenn er innerhalb des
+  // gewählten km-Radius liegt.
+  function stopMatchesQuery(stop, query, countryQuery, coords, radiusKm) {
+    const nameOk = !query || stop.name?.toLowerCase().includes(query.toLowerCase())
+    const countryOk = !countryQuery || (stop.country || '').toLowerCase().includes(countryQuery.toLowerCase())
+    if (nameOk && countryOk) return true
+    if (radiusKm > 0 && coords && stop.latitude != null && stop.longitude != null) {
+      return haversineKm(coords.lat, coords.lon, stop.latitude, stop.longitude) <= radiusKm
+    }
+    return false
   }
 
   function tripMatchesSearch(trip) {
@@ -381,16 +502,12 @@ export default function InvitePage() {
     if (trip.trip_date < todayIso()) return false
 
     const stops = trip.stops || []
-    const fromCandidates = stops.filter((s) => {
-      const nameOk = !activeSearch.city || s.name?.toLowerCase().includes(activeSearch.city.toLowerCase())
-      const countryOk = !activeSearch.country || (s.country || '').toLowerCase().includes(activeSearch.country.toLowerCase())
-      return nameOk && countryOk
-    })
-    const toCandidates = stops.filter((s) => {
-      const nameOk = !activeSearch.destCity || s.name?.toLowerCase().includes(activeSearch.destCity.toLowerCase())
-      const countryOk = !activeSearch.destCountry || (s.country || '').toLowerCase().includes(activeSearch.destCountry.toLowerCase())
-      return nameOk && countryOk
-    })
+    const fromCandidates = stops.filter((s) =>
+      stopMatchesQuery(s, activeSearch.city, activeSearch.country, activeSearch.startCoords, activeSearch.startRadiusKm)
+    )
+    const toCandidates = stops.filter((s) =>
+      stopMatchesQuery(s, activeSearch.destCity, activeSearch.destCountry, activeSearch.destCoords, activeSearch.destRadiusKm)
+    )
     const locationOk = fromCandidates.some((f) => toCandidates.some((t) => f.order_index < t.order_index))
     if (!locationOk) return false
 
@@ -405,6 +522,48 @@ export default function InvitePage() {
   }
 
   const visibleTrips = hasSearched ? trips.filter(tripMatchesSearch) : []
+
+  const [alertBusy, setAlertBusy] = useState(false)
+  const [alertSaved, setAlertSaved] = useState(false)
+  const [mySearchAlerts, setMySearchAlerts] = useState([])
+  const [deletingAlertId, setDeletingAlertId] = useState(null)
+
+  const loadMySearchAlerts = useCallback(async () => {
+    if (!token) return
+    const { data } = await supabase.rpc('fn_list_my_search_alerts', { p_token: token })
+    setMySearchAlerts(data?.alerts || [])
+  }, [token])
+
+  useEffect(() => { loadMySearchAlerts() }, [loadMySearchAlerts])
+
+  async function deleteSearchAlert(id) {
+    if (!confirm('Diesen Suchauftrag wirklich löschen?')) return
+    setDeletingAlertId(id)
+    await supabase.rpc('fn_delete_search_alert', { p_token: token, p_alert_id: id })
+    setDeletingAlertId(null)
+    loadMySearchAlerts()
+  }
+
+  async function createSearchAlert() {
+    if (!activeSearch.startCoords || !activeSearch.destCoords) return
+    setAlertBusy(true)
+    const { data, error: err } = await supabase.rpc('fn_create_search_alert', {
+      p_token: token,
+      p_start_lat: activeSearch.startCoords.lat,
+      p_start_lon: activeSearch.startCoords.lon,
+      p_start_label: activeSearch.city,
+      p_dest_lat: activeSearch.destCoords.lat,
+      p_dest_lon: activeSearch.destCoords.lon,
+      p_dest_label: activeSearch.destCity,
+    })
+    setAlertBusy(false)
+    if (err || data?.error) {
+      alert('Suchauftrag konnte nicht gespeichert werden.')
+      return
+    }
+    setAlertSaved(true)
+    loadMySearchAlerts()
+  }
 
   // Abweichung (in Tagen) zwischen gesuchtem Datum und tatsächlichem
   // Fahrtdatum, für den Hinweistext bei flexibler Datumssuche.
@@ -625,7 +784,50 @@ export default function InvitePage() {
       setBookingMsg({ type: 'error', text: map[data?.error] || 'Buchung fehlgeschlagen.' })
       return
     }
-    setBookingMsg({ type: 'success', text: `Platz erfolgreich gebucht! Mitfahrbeitrag: EUR ${data.price}` })
+    const fromName = tripDetails?.stops.find((s) => s.id === fromStop)?.name
+    const toName = tripDetails?.stops.find((s) => s.id === toStop)?.name
+    const message = [
+      `Hallo ${tripDetails?.driver_name || ''}!`.replace('Hallo !', 'Hallo!'),
+      `Ich habe soeben ${seats} Platz/Plätze für die Fahrt ${selectedTrip?.route_name} am ${formatDate(selectedTrip?.trip_date)} (${formatTime(selectedTrip?.start_time)} Uhr) gebucht.`,
+      `Abschnitt: ${fromName} → ${toName}`,
+      `Mitfahrbeitrag: EUR ${data.price}`,
+      `Viele Grüße, ${person?.name || ''}`,
+    ].join('\n')
+    setLastBookingNotify({ phone: tripDetails?.driver_phone, message })
+
+    console.log('[E-Mail] Buchung abgeschlossen — geprüfte Adressen:', {
+      driver_email: tripDetails?.driver_email ?? '(keine hinterlegt)',
+      person_email: person?.email ?? '(keine hinterlegt)',
+    })
+
+    const emailNotes = []
+    if (person?.email) emailNotes.push('du erhältst eine Bestätigung per E-Mail')
+    if (tripDetails?.driver_email) emailNotes.push('der Fahrer wurde per E-Mail informiert')
+    const emailHint = emailNotes.length > 0 ? ` (${emailNotes.join(' und ')}.)` : ''
+    setBookingMsg({ type: 'success', text: `Platz erfolgreich gebucht! Mitfahrbeitrag: EUR ${data.price}${emailHint}` })
+
+    if (tripDetails?.driver_email) {
+      sendEmailNotification(
+        tripDetails.driver_email,
+        `Neue Buchung: ${selectedTrip?.route_name}`,
+        message
+      )
+    }
+    if (person?.email) {
+      sendEmailNotification(
+        person.email,
+        `Buchungsbestätigung: ${selectedTrip?.route_name}`,
+        [
+          `Hallo ${person.name}!`,
+          `Deine Buchung wurde bestätigt.`,
+          `Fahrt: ${selectedTrip?.route_name} am ${formatDate(selectedTrip?.trip_date)} (${formatTime(selectedTrip?.start_time)} Uhr)`,
+          `Abschnitt: ${fromName} → ${toName}`,
+          `Mitfahrbeitrag: EUR ${data.price}`,
+          `Fahrer: ${tripDetails?.driver_name || '—'}`,
+        ].join('\n')
+      )
+    }
+
     setFromStop('')
     setToStop('')
     reloadTripDetails(selectedTrip)
@@ -635,13 +837,30 @@ export default function InvitePage() {
 
   async function cancelBooking(id) {
     if (!confirm('Buchung wirklich stornieren?')) return
+    const b = myBookings.find((x) => x.id === id)
     await supabase.rpc('fn_cancel_booking', { p_token: token, p_booking_id: id })
     loadMyBookings()
     refreshTrips()
     if (selectedTrip) openTrip(selectedTrip)
+
+    console.log('[E-Mail] Stornierung abgeschlossen — geprüfte Fahrer-Adresse:', b?.driver_email ?? '(keine hinterlegt)')
+
+    if (b?.driver_email) {
+      sendEmailNotification(
+        b.driver_email,
+        `Buchung storniert: ${b.route_name}`,
+        [
+          `Hallo ${b.driver_name || ''}!`.replace('Hallo !', 'Hallo!'),
+          `${person?.name || 'Ein Mitfahrer'} hat die Buchung für deine Fahrt storniert.`,
+          `Fahrt: ${b.route_name} am ${formatDate(b.trip_date)} (${formatTime(b.start_time)} Uhr)`,
+          `Abschnitt: ${b.from_stop} → ${b.to_stop} · ${b.seats} Platz/Plätze`,
+        ].join('\n')
+      )
+    }
   }
 
   const [signupRole, setSignupRole] = useState(null) // null | 'mitfahrer' | 'fahrer'
+  const [showLandingDetails, setShowLandingDetails] = useState(false)
   const [signupFirstName, setSignupFirstName] = useState('')
   const [signupLastName, setSignupLastName] = useState('')
   const [signupPhone, setSignupPhone] = useState('')
@@ -700,10 +919,61 @@ export default function InvitePage() {
     return (
       <>
         <div className="app-header">
-          <h1>Mitfahrt buchen</h1>
+          <Logo height={40} />
           <p>Willkommen 👋</p>
         </div>
         <div className="container">
+          {!signupRole && !signupResult && (
+            <div className="card">
+              <p style={{ margin: '0 0 12px' }}>
+                Du möchtest einfach eine Mitfahrgelegenheit buchen? Oder als Fahrer deine
+                freien Plätze anbieten, um Fahrtkosten zu teilen und neue Leute kennenzulernen?
+                Dann bist du hier genau richtig!
+              </p>
+              <p style={{ margin: '0 0 12px', fontWeight: 600 }}>Schön, dass du da bist — gute Fahrt!</p>
+
+              <button
+                className="secondary"
+                style={{ width: '100%', marginBottom: showLandingDetails ? 12 : 0 }}
+                onClick={() => setShowLandingDetails(!showLandingDetails)}
+              >
+                {showLandingDetails ? 'Weniger anzeigen' : 'Warum - Wie - Kosten'}
+              </button>
+
+              {showLandingDetails && (
+                <>
+                  <p style={{ margin: '0 0 12px' }}>
+                    Ich habe diese Plattform ins Leben gerufen, um eine schlanke, preiswerte und
+                    unkomplizierte Alternative zu den grossen Anbietern zu schaffen. Für Mitfahrer
+                    ist die Nutzung komplett gebührenfrei. Ganz umsonst lässt sich ein solches
+                    Projekt im Hintergrund aber leider nicht betreiben.
+                  </p>
+                  <p style={{ margin: '0 0 12px' }}>
+                    Damit die Webseite rund um die Uhr sicher online bleibt, fallen laufende
+                    Kosten an — zum Beispiel für die Domain, das Webhosting, verschlüsselte
+                    SSL-Zertifikate, den automatischen E-Mail-Versand (Buchungsbestätigungen)
+                    sowie für Rechtstexte und die Transaktionsgebühren der Zahlungsanbieter.
+                  </p>
+                  <p style={{ margin: '0 0 8px' }}>
+                    Um diese Ausgaben fair zu decken, setzen wir auf ein einfaches
+                    Unterstützer-Modell:
+                  </p>
+                  <ul style={{ margin: 0, paddingLeft: 20 }}>
+                    <li style={{ marginBottom: 8 }}>
+                      Als Fahrer schliesst du für lediglich 1 € pro Monat ein kleines Abo ab.
+                      Damit kannst du flexibel Fahrten für den laufenden und den Folgemonat
+                      veröffentlichen.
+                    </li>
+                    <li>
+                      Als Mitfahrer buchst du komplett kostenlos. Wenn dir der Dienst gefällt,
+                      freuen wir uns natürlich über ein freiwilliges Trinkgeld.
+                    </li>
+                  </ul>
+                </>
+              )}
+            </div>
+          )}
+
           {!signupRole && !signupResult && (
             <div className="card">
               <h3>Noch keinen Einladungslink?</h3>
@@ -728,7 +998,7 @@ export default function InvitePage() {
                 <label>Name</label>
                 <input value={signupLastName} onChange={(e) => setSignupLastName(e.target.value)} required />
                 <label>Mobilnummer</label>
-                <input type="tel" value={signupPhone} onChange={(e) => setSignupPhone(e.target.value)} required />
+                <input type="tel" value={signupPhone} onChange={(e) => setSignupPhone(e.target.value)} placeholder="z.B. +41 79 123 45 67" required />
                 <label>E-Mail</label>
                 <input type="email" value={signupEmail} onChange={(e) => setSignupEmail(e.target.value)} required />
                 {signupError && <div className="notice error" style={{ marginTop: 12 }}>{signupError}</div>}
@@ -755,6 +1025,9 @@ export default function InvitePage() {
               </button>
             </div>
           )}
+          <div style={{ textAlign: 'center', marginTop: 20 }}>
+            <Link to="/impressum" target="_blank" style={{ fontSize: 13 }}>Impressum</Link>
+          </div>
         </div>
       </>
     )
@@ -775,8 +1048,11 @@ export default function InvitePage() {
   return (
     <>
       <div className="app-header">
-        <h1>Mitfahrt buchen</h1>
-        <p>Hallo {person?.name} 👋</p>
+        <div className="app-header-text">
+          <Logo height={36} />
+          <p>Hallo {person?.name} 👋</p>
+        </div>
+        <BuyMeACoffeeBadge active={person?.bmc_subscription_active} projectLink={person?.project_buymeacoffee_link} onGoToSettings={() => setTab('settings')} />
       </div>
 
       <div className="container">
@@ -795,7 +1071,17 @@ export default function InvitePage() {
         {tab === 'trips' && !selectedTrip && (
           <>
             <form onSubmit={runSearch} className="card">
-              <label>Startort</label>
+              <label>Umkreis um den Startort: ± {radiusKmStartInput} km</label>
+              <input
+                type="range"
+                min={10}
+                max={50}
+                step={10}
+                value={radiusKmStartInput}
+                onChange={(e) => setRadiusKmStartInput(Number(e.target.value))}
+                style={{ width: '100%' }}
+              />
+              <label style={{ marginTop: 12 }}>Startort</label>
               <div style={{ position: 'relative' }}>
                 <input
                   value={searchCityInput}
@@ -819,13 +1105,29 @@ export default function InvitePage() {
                   </div>
                 )}
               </div>
+              {!searchStartCoords && (
+                <div className="meta" style={{ marginTop: 6, marginBottom: 10 }}>
+                  Umkreis wirkt nur, wenn der Startort aus den Vorschlägen ausgewählt wird.
+                </div>
+              )}
               <label>Startland</label>
               <input
                 value={searchCountryInput}
                 onChange={(e) => setSearchCountryInput(e.target.value)}
                 placeholder="z.B. Schweiz"
               />
-              <label>Zielort</label>
+
+              <label style={{ marginTop: 20 }}>Umkreis um den Zielort: ± {radiusKmDestInput} km</label>
+              <input
+                type="range"
+                min={10}
+                max={50}
+                step={10}
+                value={radiusKmDestInput}
+                onChange={(e) => setRadiusKmDestInput(Number(e.target.value))}
+                style={{ width: '100%' }}
+              />
+              <label style={{ marginTop: 12 }}>Zielort</label>
               <div style={{ position: 'relative' }}>
                 <input
                   value={destCityInput}
@@ -849,6 +1151,11 @@ export default function InvitePage() {
                   </div>
                 )}
               </div>
+              {!searchDestCoords && (
+                <div className="meta" style={{ marginTop: 6, marginBottom: 10 }}>
+                  Umkreis wirkt nur, wenn der Zielort aus den Vorschlägen ausgewählt wird.
+                </div>
+              )}
               <label>Zielland</label>
               <input
                 value={destCountryInput}
@@ -884,6 +1191,36 @@ export default function InvitePage() {
               </div>
             </form>
 
+            {hasSearched && (
+              <div className="card">
+                {!person?.email ? (
+                  <div className="meta">
+                    🔔 Um bei neuen passenden Fahrten per E-Mail informiert zu werden, hinterlege zuerst
+                    eine E-Mail-Adresse im Tab „Einstellungen".
+                  </div>
+                ) : activeSearch.startCoords && activeSearch.destCoords ? (
+                  <button
+                    type="button"
+                    className={alertSaved ? 'secondary' : ''}
+                    style={{ width: '100%' }}
+                    disabled={alertBusy || alertSaved}
+                    onClick={createSearchAlert}
+                  >
+                    {alertSaved
+                      ? '✓ Du wirst benachrichtigt, sobald eine passende Fahrt eingestellt wird'
+                      : alertBusy
+                        ? 'Wird gespeichert …'
+                        : '🔔 Informiere mich, wenn neue Fahrten eingestellt werden!'}
+                  </button>
+                ) : (
+                  <div className="meta">
+                    🔔 Um bei neuen passenden Fahrten per E-Mail informiert zu werden, wähle Start- und
+                    Zielort oben aus den Vorschlägen aus (nicht nur eintippen).
+                  </div>
+                )}
+              </div>
+            )}
+
             {visibleTrips.length === 0 && (
               <div className="empty-state">
                 {!hasSearched
@@ -907,6 +1244,16 @@ export default function InvitePage() {
                   <h3>{t.route_name}{t.via_stops && ` (via ${t.via_stops})`}</h3>
                   <div className="meta">{formatDate(t.trip_date)} · {formatTime(t.start_time)} Uhr</div>
                   {t.car_name && <div className="meta">🚗 {t.car_name}{t.car_notes ? ` (${t.car_notes})` : ''}</div>}
+                  {t.driver_name && (
+                    <div className="meta">
+                      👤 {t.driver_name}{t.driver_phone ? ` · ${t.driver_phone}` : ''}
+                      {whatsappLink(t.driver_phone) && (
+                        <a href={whatsappLink(t.driver_phone)} target="_blank" rel="noreferrer" style={{ marginLeft: 6 }} onClick={(e) => e.stopPropagation()}>
+                          💬 WhatsApp
+                        </a>
+                      )}
+                    </div>
+                  )}
                   {dateHint && <div className="notice" style={{ background: '#fff4e0', color: '#8a5a00', marginTop: 8 }}>{dateHint}</div>}
                   {closedWithSeats && (
                     <div className="notice error" style={{ marginTop: 8 }}>
@@ -934,6 +1281,16 @@ export default function InvitePage() {
             <h3>{selectedTrip.route_name}</h3>
             <div className="meta">{formatDate(selectedTrip.trip_date)} · {formatTime(selectedTrip.start_time)} Uhr</div>
             {tripDetails.car_name && <div className="meta">🚗 {tripDetails.car_name}{tripDetails.car_notes ? ` (${tripDetails.car_notes})` : ''}</div>}
+            {tripDetails.driver_name && (
+              <div className="meta">
+                👤 {tripDetails.driver_name}{tripDetails.driver_phone ? ` · ${tripDetails.driver_phone}` : ''}
+                {whatsappLink(tripDetails.driver_phone) && (
+                  <a href={whatsappLink(tripDetails.driver_phone)} target="_blank" rel="noreferrer" style={{ marginLeft: 6 }}>
+                    💬 WhatsApp
+                  </a>
+                )}
+              </div>
+            )}
             {tripDetails.driver_payment_info && (
               <div className="meta">💳 Bezahlung: {
                 /^https?:\/\//i.test(tripDetails.driver_payment_info)
@@ -982,6 +1339,11 @@ export default function InvitePage() {
             </details>
 
             {bookingMsg && <div className={`notice ${bookingMsg.type}`} style={{ margin: '12px 0' }}>{bookingMsg.text}</div>}
+            {bookingMsg?.type === 'success' && lastBookingNotify && whatsappLink(lastBookingNotify.phone, lastBookingNotify.message) && (
+              <a href={whatsappLink(lastBookingNotify.phone, lastBookingNotify.message)} target="_blank" rel="noreferrer">
+                <button type="button" style={{ width: '100%', marginBottom: 12 }}>💬 Fahrer per WhatsApp informieren</button>
+              </a>
+            )}
 
             {!fromStop || !toStop ? (
               <>
@@ -1089,6 +1451,16 @@ export default function InvitePage() {
                   <h3>{b.from_stop} → {b.to_stop} · {b.seats} Platz/Plätze</h3>
                   <div className="meta">{formatDate(b.trip_date)} · {formatTime(b.start_time)} Uhr</div>
                   {b.car_name && <div className="meta">🚗 {b.car_name}{b.car_notes ? ` (${b.car_notes})` : ''}</div>}
+                  {b.driver_name && (
+                    <div className="meta">
+                      👤 {b.driver_name}{b.driver_phone ? ` · ${b.driver_phone}` : ''}
+                      {whatsappLink(b.driver_phone) && (
+                        <a href={whatsappLink(b.driver_phone)} target="_blank" rel="noreferrer" style={{ marginLeft: 6 }}>
+                          💬 WhatsApp
+                        </a>
+                      )}
+                    </div>
+                  )}
                   {departure && arrival && (
                     <div className="meta">
                       ab {departure.time}{departure.nextDay ? ' (+1 Tag)' : ''} Uhr · an ca. {arrival.time}{arrival.nextDay ? ' (+1 Tag)' : ''} Uhr
@@ -1151,9 +1523,22 @@ export default function InvitePage() {
             </div>
             <form onSubmit={saveProfileSettings} style={{ marginTop: 12 }}>
               <label>Mobilnummer</label>
-              <input type="tel" value={settingsPhone} onChange={(e) => setSettingsPhone(e.target.value)} placeholder="z.B. 079 123 45 67" />
+              <input type="tel" value={settingsPhone} onChange={(e) => setSettingsPhone(e.target.value)} placeholder="z.B. +41 79 123 45 67" />
+              <div className="meta" style={{ marginTop: -8, marginBottom: 10 }}>
+                Bitte mit Ländervorwahl (z.B. +41) angeben, damit der WhatsApp-Kontakt-Link korrekt funktioniert.
+              </div>
               <label>E-Mail</label>
               <input type="email" value={settingsEmail} onChange={(e) => setSettingsEmail(e.target.value)} placeholder="deine@email.ch" />
+              <div style={{ margin: '10px 0', padding: '10px 12px', background: '#f0f2f4', borderRadius: 10 }}>
+                <div className="meta" style={{ fontWeight: 600, marginBottom: 4 }}>☕ Buy Me a Coffee</div>
+                <div className="meta">
+                  Status: {person?.bmc_subscription_active ? 'aktiv' : 'nicht aktiv'}
+                  {person?.bmc_last_payment_date && ` · letztes Zahldatum ${person.bmc_last_payment_date}`}
+                </div>
+                <div className="meta" style={{ marginTop: 2, fontStyle: 'italic' }}>
+                  Wird vom Admin gepflegt, sobald die Unterstützung aktiv ist.
+                </div>
+              </div>
               {settingsMsg && <div className={`notice ${settingsMsg.type}`} style={{ marginTop: 12 }}>{settingsMsg.text}</div>}
               <button style={{ marginTop: 12, width: '100%' }} disabled={settingsBusy}>
                 {settingsBusy ? 'Wird gespeichert …' : 'Einstellungen speichern'}
@@ -1161,6 +1546,30 @@ export default function InvitePage() {
             </form>
           </div>
         )}
+
+        {tab === 'settings' && (
+          <div className="card">
+            <h3>🔔 Meine Suchaufträge</h3>
+            <div className="meta" style={{ marginBottom: 10 }}>
+              Bei diesen Suchen wirst du per E-Mail informiert, sobald eine passende neue Fahrt eingestellt wird.
+            </div>
+            {mySearchAlerts.length === 0 && <div className="empty-state">Noch keine Suchaufträge gespeichert.</div>}
+            {mySearchAlerts.map((a) => (
+              <div key={a.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 0', borderBottom: '1px solid var(--color-border)' }}>
+                <div>
+                  <div>{a.start_label || '—'} → {a.dest_label || '—'}</div>
+                  <div className="meta">± {a.radius_km} km · gespeichert am {formatDate(a.created_at.slice(0, 10))}</div>
+                </div>
+                <button className="danger" style={{ padding: '6px 10px' }} onClick={() => deleteSearchAlert(a.id)} disabled={deletingAlertId === a.id}>
+                  {deletingAlertId === a.id ? '…' : 'Löschen'}
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+        <div style={{ textAlign: 'center', margin: '20px 0' }}>
+          <Link to="/impressum" target="_blank" style={{ fontSize: 13 }}>Impressum</Link>
+        </div>
       </div>
     </>
   )
