@@ -67,6 +67,24 @@ async function sendEmailNotification(to, subject, text) {
   }
 }
 
+// Wandelt eine führende "00"-Vorwahl automatisch in "+" um (00 und + sind
+// gleichbedeutend als internationales Vorwahl-Präfix).
+// Baut einen wa.me-Link aus einer Telefonnummer (internationales Format
+// erforderlich, z.B. "+41 79 123 45 67").
+function whatsappLink(phone) {
+  if (!phone) return null
+  let digits = phone.replace(/[^\d+]/g, '')
+  if (digits.startsWith('+')) digits = digits.slice(1)
+  else if (digits.startsWith('00')) digits = digits.slice(2)
+  if (!digits) return null
+  return `https://wa.me/${digits}`
+}
+
+function normalizePhoneInput(value) {
+  if (value.startsWith('00')) return '+' + value.slice(2)
+  return value
+}
+
 function formatTime(timeStr) {
   return timeStr?.slice(0, 5)
 }
@@ -411,6 +429,25 @@ function DriverRoutesManager({ token, onRoutesChanged, driverRate }) {
     setStops(data.stops)
   }
 
+  const [creatingReverse, setCreatingReverse] = useState(false)
+
+  async function createReverseRoute() {
+    if (stops.length < 2) return
+    setCreatingReverse(true)
+    const { data, error: err } = await supabase.rpc('fn_driver_create_reverse_route', {
+      p_token: token, p_route_id: openRoute.id,
+    })
+    setCreatingReverse(false)
+    if (err || data?.error) {
+      alert('Rückfahrstrecke konnte nicht angelegt werden.')
+      return
+    }
+    onRoutesChanged?.()
+    alert('Rückfahrstrecke wurde angelegt — zu finden in "Meine Strecken".')
+    setOpenRoute(null)
+    loadOwnRoutes()
+  }
+
   async function saveRouteMeta() {
     setSaveError(null)
     const { error: err } = await supabase.rpc('fn_driver_update_route_meta', {
@@ -554,6 +591,14 @@ function DriverRoutesManager({ token, onRoutesChanged, driverRate }) {
     return (
       <div style={{ marginTop: 12 }}>
         <button className="secondary" style={{ marginBottom: 12 }} onClick={() => { setOpenRoute(null); loadOwnRoutes() }}>← Zurück zu meinen Strecken</button>
+        <button
+          className="secondary"
+          style={{ marginBottom: 12, marginLeft: 8 }}
+          disabled={creatingReverse || stops.length < 2}
+          onClick={createReverseRoute}
+        >
+          {creatingReverse ? 'Wird angelegt …' : '🔄 Rückfahrstrecke anlegen'}
+        </button>
 
         <label>Streckenname</label>
         <input value={routeNameDraft} onChange={(e) => setRouteNameDraft(e.target.value)} onBlur={saveRouteMeta} />
@@ -907,6 +952,26 @@ export default function DriverPage() {
     loadAll()
   }
 
+  const [seatsUpdatingId, setSeatsUpdatingId] = useState(null)
+
+  async function updateTripSeats(t, newSeats) {
+    if (newSeats < 1) return
+    setSeatsUpdatingId(t.id)
+    const { data, error: err } = await supabase.rpc('fn_driver_update_trip_seats', {
+      p_token: token, p_trip_id: t.id, p_seats: newSeats,
+    })
+    setSeatsUpdatingId(null)
+    if (err || data?.error) {
+      if (data?.error === 'below_min_seats') {
+        alert(`Weniger als ${data.min_seats} Plätze sind nicht möglich — so viele sind auf mindestens einem Streckenabschnitt bereits gebucht.`)
+      } else {
+        alert('Sitzplatzanzahl konnte nicht geändert werden.')
+      }
+      return
+    }
+    loadAll()
+  }
+
   useEffect(() => { loadAll() }, [loadAll])
 
   // Prüft vor dem Veröffentlichen, ob für die gewählte Strecke bereits
@@ -1091,6 +1156,13 @@ export default function DriverPage() {
               return (
                 <div key={b.id} style={{ padding: '10px 0', borderBottom: '1px solid var(--color-border)' }}>
                   <strong>{b.person_name}</strong> — {b.from_stop} → {b.to_stop} ({b.seats} Platz/Plätze) · EUR {b.price}
+                  {whatsappLink(b.person_phone) && (
+                    <div>
+                      <a href={whatsappLink(b.person_phone)} target="_blank" rel="noreferrer" style={{ fontSize: 13 }}>
+                        💬 WhatsApp
+                      </a>
+                    </div>
+                  )}
                   {b.can_rate && (
                     <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px dashed var(--color-border)' }}>
                       <div className="meta" style={{ marginBottom: 8, fontWeight: 600 }}>
@@ -1203,7 +1275,7 @@ export default function DriverPage() {
             </div>
             <form onSubmit={saveSettings} style={{ marginTop: 12 }}>
               <label>Mobilnummer</label>
-              <input type="tel" value={driverPhone} onChange={(e) => setDriverPhone(e.target.value)} placeholder="z.B. +41 79 123 45 67" />
+              <input type="tel" value={driverPhone} onChange={(e) => setDriverPhone(normalizePhoneInput(e.target.value))} placeholder="z.B. +41 79 123 45 67" />
               <div className="meta" style={{ marginTop: -8, marginBottom: 10 }}>
                 Bitte mit Ländervorwahl (z.B. +41) angeben, damit der WhatsApp-Kontakt-Link für Mitfahrer korrekt funktioniert.
               </div>
@@ -1342,9 +1414,27 @@ export default function DriverPage() {
                 <div style={{ margin: '8px 0' }}>
                   <span className="badge">{t.seats_booked} / {t.total_seats} Plätze gebucht</span>
                 </div>
+                <div className="row" style={{ alignItems: 'center' }}>
+                  <label style={{ margin: 0 }}>Freie Plätze gesamt:</label>
+                  <button
+                    className="secondary"
+                    style={{ padding: '4px 12px' }}
+                    disabled={seatsUpdatingId === t.id || t.total_seats <= t.min_seats}
+                    onClick={() => updateTripSeats(t, t.total_seats - 1)}
+                  >−</button>
+                  <span style={{ minWidth: 24, textAlign: 'center', fontWeight: 600 }}>{t.total_seats}</span>
+                  <button
+                    className="secondary"
+                    style={{ padding: '4px 12px' }}
+                    disabled={seatsUpdatingId === t.id}
+                    onClick={() => updateTripSeats(t, t.total_seats + 1)}
+                  >+</button>
+                </div>
                 <div className="row">
                   <button onClick={() => showBookings(t)}>Mitfahrer ansehen</button>
                   <button className="secondary" onClick={() => toggleClosed(t)}>{t.closed ? 'Buchungen wieder zulassen' : 'Neue Buchungen blockieren'}</button>
+                </div>
+                <div className="row" style={{ marginTop: 8 }}>
                   <button className="secondary" onClick={() => copyTrip(t)}>Kopieren</button>
                   <button className="danger" onClick={() => deleteTrip(t.id)}>Löschen</button>
                 </div>

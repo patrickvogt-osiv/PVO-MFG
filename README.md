@@ -146,6 +146,11 @@ normale App nutzbar (Icon auf dem Homescreen), ohne App Store.
    - `supabase/migration_36_fahrt_kopieren.sql` (Fahrt kopieren)
    - `supabase/migration_37_willkommenstext_editierbar.sql` (Willkommenstext admin-editierbar)
    - `supabase/migration_38_email_log.sql` (dauerhaftes E-Mail-Versand-Log)
+   - `supabase/migration_39_suchauftrag_datum.sql` (Datum/Flexibilität bei Suchaufträgen)
+   - `supabase/migration_40_benachrichtigung_datum.sql` (Datum/Flexibilität in der Benachrichtigungs-Logik)
+   - `supabase/migration_41_mitfahrer_telefon_bei_buchungen.sql` (WhatsApp-Link bei Buchungsübersicht des Fahrers)
+   - `supabase/migration_42_sitzplaetze_anpassen.sql` (Sitzplatzanzahl per +/- nachträglich anpassen)
+   - `supabase/migration_43_rueckfahrstrecke.sql` (Rückfahrstrecke anlegen)
 3. Unter **Authentication → Users** einen Benutzer für dich selbst anlegen
    (E-Mail + Passwort) — das ist dein Admin-Login für `/admin`.
 4. Unter **Project Settings → API** findest du:
@@ -462,3 +467,53 @@ jetzt zusätzlich in `email_log`, nachdem sie den eigentlichen Versand
 versucht hat. Schlägt das Loggen selbst fehl (sollte praktisch nie
 vorkommen), wird das nur in den Function-Logs vermerkt und verhindert nie
 den eigentlichen E-Mail-Versand.
+
+## Suchaufträge: eigener Tab + Datum/Flexibilität in der Anzeige
+
+"Meine Suchaufträge" ist jetzt ein eigener Tab (statt Teil von
+"Einstellungen") im Mitfahrer-Bereich. Jeder Eintrag zeigt zusätzlich das bei
+der Suche gewählte Datum inkl. Flexibilität, sofern eines gesetzt war, z.B.:
+
+```
+München → Sankt Gallen
+So., 20.09.2026 (± 2 Tage)
+± 20 km · gespeichert am Fr., 04.09.2026
+```
+
+**Wichtig:** Datum/Flexibilität werden jetzt auch bei der Benachrichtigung
+berücksichtigt (siehe Migration 40) — ist beim Suchauftrag ein Datum
+gesetzt, kommt die E-Mail nur, wenn das neue Fahrtdatum innerhalb von
+[Datum − Flexibilität, Datum + Flexibilität] liegt. Ohne gesetztes Datum
+bleibt es weiterhin rein ortsbasiert.
+
+## Sitzplatzanzahl nachträglich anpassen (Fahrer)
+
+Bei jeder eigenen Fahrt in "Meine Fahrten" gibt es jetzt "−"/"+"-Buttons bei
+"Freie Plätze gesamt". Der "−"-Button ist automatisch deaktiviert, sobald
+die Untergrenze erreicht ist — diese Untergrenze ist die **maximale
+gleichzeitige Belegung** über die Strecke hinweg, nicht einfach die Summe
+aller Buchungen (zwei Mitfahrer auf unterschiedlichen, nicht überlappenden
+Teilstrecken zählen z.B. nicht doppelt). Wird die Sitzplatzanzahl exakt auf
+die aktuelle Auslastung reduziert, ist die Fahrt automatisch "ausgebucht"
+(0 freie Plätze) — ganz ohne die Fahrt manuell schließen zu müssen.
+
+Die Grenze wird zusätzlich serverseitig geprüft (`fn_driver_update_trip_seats`)
+— selbst falls die Anzeige mal veraltet sein sollte, kann nie versehentlich
+unter die tatsächliche Belegung reduziert werden.
+
+## Rückfahrstrecke anlegen
+
+In der Streckendetailansicht (Fahrer-Bereich "Meine Strecken" sowie im
+Admin-Bereich) gibt es jetzt neben "Zurück" einen Button
+"🔄 Rückfahrstrecke anlegen". Er erstellt eine komplett neue Strecke mit
+umgekehrter Stopp-Reihenfolge (letzter Stopp wird neuer Startpunkt usw.).
+
+Koordinaten, Entfernungen, Fahrzeiten und Mitfahrbeiträge werden dabei
+**automatisch übernommen** — nur der jeweiligen Gegenrichtung neu
+zugeordnet (Straße A→B bleibt physisch dieselbe wie B→A, nur eben
+umgekehrt durchfahren). Ein erneutes "Entfernungen berechnen" ist bei der
+neuen Strecke also normalerweise nicht nötig.
+
+Der Name wird automatisch angepasst: folgt er dem üblichen Muster
+"Start - Ziel", wird er zu "Ziel - Start" umgedreht; sonst wird
+" (Rückfahrt)" angehängt.

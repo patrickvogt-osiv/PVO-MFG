@@ -841,6 +841,60 @@ function RoutesTab() {
     setStops(data || [])
   }
 
+  const [creatingReverse, setCreatingReverse] = useState(false)
+
+  async function createReverseRoute() {
+    if (stops.length < 2) return
+    setCreatingReverse(true)
+
+    const maxOrder = stops.length - 1
+    let newName
+    const sepIdx = openRoute.name.indexOf(' - ')
+    if (sepIdx !== -1) {
+      const part1 = openRoute.name.slice(0, sepIdx)
+      const part2 = openRoute.name.slice(sepIdx + 3)
+      newName = `${part2} - ${part1}`
+    } else {
+      newName = `${openRoute.name} (Rückfahrt)`
+    }
+
+    const { data: newRoute, error: routeErr } = await supabase
+      .from('routes')
+      .insert({ name: newName, total_price: openRoute.total_price, driver_id: openRoute.driver_id || null })
+      .select('id')
+      .single()
+
+    if (routeErr || !newRoute) {
+      setCreatingReverse(false)
+      alert('Rückfahrstrecke konnte nicht angelegt werden: ' + (routeErr?.message || ''))
+      return
+    }
+
+    const newStops = stops.map((s, idx) => {
+      const prev = idx > 0 ? stops[idx - 1] : null
+      return {
+        route_id: newRoute.id,
+        name: s.name, postal_code: s.postal_code, street: s.street, house_number: s.house_number,
+        country: s.country, maps_link: s.maps_link,
+        order_index: maxOrder - idx,
+        latitude: s.latitude, longitude: s.longitude,
+        price_to_next: prev ? prev.price_to_next : null,
+        distance_to_next_km: prev ? prev.distance_to_next_km : null,
+        duration_to_next_min: prev ? prev.duration_to_next_min : null,
+      }
+    })
+
+    const { error: stopsErr } = await supabase.from('route_stops').insert(newStops)
+    setCreatingReverse(false)
+    if (stopsErr) {
+      alert('Rückfahrstrecke wurde angelegt, aber Zwischenstopps konnten nicht gespeichert werden: ' + stopsErr.message)
+      return
+    }
+    alert('Rückfahrstrecke wurde angelegt.')
+    setOpenRoute(null)
+    loadRoutes()
+  }
+
   async function saveRouteMeta() {
     setSaveError(null)
     const patch = {}
@@ -1020,6 +1074,14 @@ function RoutesTab() {
     return (
       <div className="card">
         <button className="secondary" style={{ marginBottom: 12 }} onClick={() => { setOpenRoute(null); loadRoutes() }}>← Zurück</button>
+        <button
+          className="secondary"
+          style={{ marginBottom: 12, marginLeft: 8 }}
+          disabled={creatingReverse || stops.length < 2}
+          onClick={createReverseRoute}
+        >
+          {creatingReverse ? 'Wird angelegt …' : '🔄 Rückfahrstrecke anlegen'}
+        </button>
 
         <label>Streckenname</label>
         <input value={routeNameDraft} onChange={(e) => setRouteNameDraft(e.target.value)} onBlur={saveRouteMeta} />
@@ -1547,6 +1609,14 @@ function TripsTab() {
     for (const alert of alerts || []) {
       const person = alert.people
       if (!person || person.revoked || !person.email) continue
+
+      if (alert.search_date) {
+        const diffDays = Math.abs(
+          (new Date(tripDate) - new Date(alert.search_date)) / 86400000
+        )
+        if (diffDays > (alert.flex_days || 0)) continue
+      }
+
       const startMatch = validStops.find(
         (s) => haversineKm(alert.start_lat, alert.start_lon, s.latitude, s.longitude) <= alert.radius_km
       )

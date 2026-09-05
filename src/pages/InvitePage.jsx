@@ -45,6 +45,13 @@ function renderMultilineText(text) {
   ))
 }
 
+// Wandelt eine führende "00"-Vorwahl automatisch in "+" um (00 und + sind
+// gleichbedeutend als internationales Vorwahl-Präfix).
+function normalizePhoneInput(value) {
+  if (value.startsWith('00')) return '+' + value.slice(2)
+  return value
+}
+
 function whatsappLink(phone, message) {
   if (!phone) return null
   let digits = phone.replace(/[^\d+]/g, '')
@@ -578,6 +585,8 @@ export default function InvitePage() {
       p_dest_lat: activeSearch.destCoords.lat,
       p_dest_lon: activeSearch.destCoords.lon,
       p_dest_label: activeSearch.destCity,
+      p_search_date: activeSearch.date || null,
+      p_flex_days: activeSearch.flexDays || 0,
     })
     setAlertBusy(false)
     if (err || data?.error) {
@@ -993,7 +1002,7 @@ export default function InvitePage() {
                 <label>Name</label>
                 <input value={signupLastName} onChange={(e) => setSignupLastName(e.target.value)} required />
                 <label>Mobilnummer</label>
-                <input type="tel" value={signupPhone} onChange={(e) => setSignupPhone(e.target.value)} placeholder="z.B. +41 79 123 45 67" required />
+                <input type="tel" value={signupPhone} onChange={(e) => setSignupPhone(normalizePhoneInput(e.target.value))} placeholder="z.B. +41 79 123 45 67" required />
                 <label>E-Mail</label>
                 <input type="email" value={signupEmail} onChange={(e) => setSignupEmail(e.target.value)} required />
                 {signupError && <div className="notice error" style={{ marginTop: 12 }}>{signupError}</div>}
@@ -1057,6 +1066,9 @@ export default function InvitePage() {
           </button>
           <button className={tab === 'mine' ? 'active' : ''} onClick={() => setTab('mine')}>
             Meine Buchungen
+          </button>
+          <button className={tab === 'alerts' ? 'active' : ''} onClick={() => setTab('alerts')}>
+            Suchaufträge
           </button>
           <button className={tab === 'settings' ? 'active' : ''} onClick={() => setTab('settings')}>
             Einstellungen
@@ -1518,7 +1530,7 @@ export default function InvitePage() {
             </div>
             <form onSubmit={saveProfileSettings} style={{ marginTop: 12 }}>
               <label>Mobilnummer</label>
-              <input type="tel" value={settingsPhone} onChange={(e) => setSettingsPhone(e.target.value)} placeholder="z.B. +41 79 123 45 67" />
+              <input type="tel" value={settingsPhone} onChange={(e) => setSettingsPhone(normalizePhoneInput(e.target.value))} placeholder="z.B. +41 79 123 45 67" />
               <div className="meta" style={{ marginTop: -8, marginBottom: 10 }}>
                 Bitte mit Ländervorwahl (z.B. +41) angeben, damit der WhatsApp-Kontakt-Link korrekt funktioniert.
               </div>
@@ -1542,7 +1554,7 @@ export default function InvitePage() {
           </div>
         )}
 
-        {tab === 'settings' && (
+        {tab === 'alerts' && (
           <div className="card">
             <h3>🔔 Meine Suchaufträge</h3>
             <div className="meta" style={{ marginBottom: 10 }}>
@@ -1553,6 +1565,11 @@ export default function InvitePage() {
               <div key={a.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 0', borderBottom: '1px solid var(--color-border)' }}>
                 <div>
                   <div>{a.start_label || '—'} → {a.dest_label || '—'}</div>
+                  {a.search_date && (
+                    <div className="meta">
+                      {formatDate(a.search_date)}{a.flex_days > 0 ? ` (± ${a.flex_days} Tag${a.flex_days === 1 ? '' : 'e'})` : ''}
+                    </div>
+                  )}
                   <div className="meta">± {a.radius_km} km · gespeichert am {formatDate(a.created_at.slice(0, 10))}</div>
                 </div>
                 <button className="danger" style={{ padding: '6px 10px' }} onClick={() => deleteSearchAlert(a.id)} disabled={deletingAlertId === a.id}>

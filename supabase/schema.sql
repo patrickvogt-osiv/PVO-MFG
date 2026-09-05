@@ -184,6 +184,8 @@ create table search_alerts (
   dest_lon    numeric not null,
   dest_label  text,
   radius_km   integer not null default 20,
+  search_date date,
+  flex_days   integer not null default 0,
   created_at  timestamptz not null default now()
 );
 
@@ -760,6 +762,22 @@ begin
            r.name as route_name, c.name as car_name, c.notes as car_notes,
            coalesce((select sum(b.seats) from bookings b where b.trip_id = tr.id and not b.cancelled), 0) as seats_booked,
            (
+             select coalesce(max(seg_sum), 0)
+             from (
+               select seg.i, coalesce(sum(b.seats), 0) as seg_sum
+               from generate_series(
+                 (select min(order_index) from route_stops where route_id = tr.route_id),
+                 (select max(order_index) from route_stops where route_id = tr.route_id) - 1
+               ) as seg(i)
+               left join bookings b
+                 on b.trip_id = tr.id
+                 and not b.cancelled
+                 and b.from_order <= seg.i
+                 and b.to_order > seg.i
+               group by seg.i
+             ) x
+           ) as min_seats,
+           (
              select string_agg(rs.name, ', ' order by rs.order_index)
              from route_stops rs
              where rs.route_id = tr.route_id
@@ -908,7 +926,7 @@ begin
   select coalesce(json_agg(b), '[]'::json) into v_result
   from (
     select bk.id, bk.seats, bk.price,
-           p.name as person_name,
+           p.name as person_name, p.phone as person_phone,
            fs.name as from_stop, ts.name as to_stop,
            (tr.trip_date <= current_date) as can_rate,
            pr.rating_punctuality, pr.rating_cleanliness, pr.rating_communication
@@ -1816,7 +1834,9 @@ create or replace function fn_create_search_alert(
   p_start_label text,
   p_dest_lat    numeric,
   p_dest_lon    numeric,
-  p_dest_label  text
+  p_dest_label  text,
+  p_search_date date default null,
+  p_flex_days   integer default 0
 )
 returns json
 language plpgsql
@@ -1835,14 +1855,14 @@ begin
     return json_build_object('error', 'missing_coords');
   end if;
 
-  insert into search_alerts (person_id, start_lat, start_lon, start_label, dest_lat, dest_lon, dest_label)
-  values (v_person.id, p_start_lat, p_start_lon, p_start_label, p_dest_lat, p_dest_lon, p_dest_label);
+  insert into search_alerts (person_id, start_lat, start_lon, start_label, dest_lat, dest_lon, dest_label, search_date, flex_days)
+  values (v_person.id, p_start_lat, p_start_lon, p_start_label, p_dest_lat, p_dest_lon, p_dest_label, p_search_date, coalesce(p_flex_days, 0));
 
   return json_build_object('success', true);
 end;
 $$;
 
-grant execute on function fn_create_search_alert(text, numeric, numeric, text, numeric, numeric, text) to anon;
+grant execute on function fn_create_search_alert(text, numeric, numeric, text, numeric, numeric, text, date, integer) to anon;
 
 -- ----------------------------------------------------------------------------
 -- Fahrer: nach dem Veröffentlichen einer eigenen Fahrt herausfinden, welche
@@ -1855,17 +1875,18 @@ security definer
 set search_path = public
 as $$
 declare
-  v_driver   drivers%rowtype;
-  v_route_id uuid;
-  v_owner    uuid;
-  v_result   json;
+  v_driver    drivers%rowtype;
+  v_route_id  uuid;
+  v_owner     uuid;
+  v_trip_date date;
+  v_result    json;
 begin
   select * into v_driver from drivers where invite_token = p_token and not revoked;
   if not found then
     return json_build_object('error', 'invalid_token');
   end if;
 
-  select route_id, driver_id into v_route_id, v_owner from trips where id = p_trip_id;
+  select route_id, driver_id, trip_date into v_route_id, v_owner, v_trip_date from trips where id = p_trip_id;
   if v_owner is null or v_owner <> v_driver.id then
     return json_build_object('error', 'not_your_trip');
   end if;
@@ -1874,7 +1895,11 @@ begin
   into v_result
   from search_alerts sa
   join people p on p.id = sa.person_id and p.email is not null and not p.revoked
-  where exists (
+  where (
+    sa.search_date is null
+    or v_trip_date between (sa.search_date - sa.flex_days) and (sa.search_date + sa.flex_days)
+  )
+  and exists (
     select 1
     from route_stops rs_start
     where rs_start.route_id = v_route_id
@@ -2009,7 +2034,8 @@ begin
   select coalesce(json_agg(
     json_build_object(
       'id', id, 'start_label', start_label, 'dest_label', dest_label,
-      'radius_km', radius_km, 'created_at', created_at
+      'radius_km', radius_km, 'created_at', created_at,
+      'search_date', search_date, 'flex_days', flex_days
     ) order by created_at desc
   ), '[]'::json)
   into v_result
@@ -2082,3 +2108,127 @@ create policy "admin full access" on email_log
 revoke all on email_log from anon;
 
 create index email_log_created_at_idx on email_log (created_at desc);
+
+-- ----------------------------------------------------------------------------
+-- Fahrer: Sitzplatzanzahl einer eigenen Fahrt ändern (mit serverseitiger
+-- Prüfung der Mindestgrenze — nie vertrauen, was der Client meldet)
+-- ----------------------------------------------------------------------------
+create or replace function fn_driver_update_trip_seats(p_token text, p_trip_id uuid, p_seats integer)
+returns json
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_driver   drivers%rowtype;
+  v_owner    uuid;
+  v_route_id uuid;
+  v_min_seats integer;
+begin
+  select * into v_driver from drivers where invite_token = p_token and not revoked;
+  if not found then
+    return json_build_object('error', 'invalid_token');
+  end if;
+
+  select driver_id, route_id into v_owner, v_route_id from trips where id = p_trip_id;
+  if v_owner is null or v_owner <> v_driver.id then
+    return json_build_object('error', 'not_your_trip');
+  end if;
+
+  if p_seats is null or p_seats < 1 then
+    return json_build_object('error', 'invalid_seats');
+  end if;
+
+  select coalesce(max(seg_sum), 0)
+  into v_min_seats
+  from (
+    select seg.i, coalesce(sum(b.seats), 0) as seg_sum
+    from generate_series(
+      (select min(order_index) from route_stops where route_id = v_route_id),
+      (select max(order_index) from route_stops where route_id = v_route_id) - 1
+    ) as seg(i)
+    left join bookings b
+      on b.trip_id = p_trip_id
+      and not b.cancelled
+      and b.from_order <= seg.i
+      and b.to_order > seg.i
+    group by seg.i
+  ) x;
+
+  if p_seats < v_min_seats then
+    return json_build_object('error', 'below_min_seats', 'min_seats', v_min_seats);
+  end if;
+
+  update trips set total_seats = p_seats where id = p_trip_id;
+
+  return json_build_object('success', true, 'min_seats', v_min_seats);
+end;
+$$;
+
+grant execute on function fn_driver_update_trip_seats(text, uuid, integer) to anon;
+
+-- ----------------------------------------------------------------------------
+-- Fahrer: Rückfahrstrecke aus einer bestehenden eigenen Strecke anlegen
+-- (umgekehrte Stopp-Reihenfolge, Entfernungen/Preise werden übernommen)
+-- ----------------------------------------------------------------------------
+create or replace function fn_driver_create_reverse_route(p_token text, p_route_id uuid)
+returns json
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_driver       drivers%rowtype;
+  v_owner        uuid;
+  v_name         text;
+  v_total_price  int;
+  v_new_route_id uuid;
+  v_max_order    int;
+  v_new_name     text;
+  v_sep_pos      int;
+begin
+  select * into v_driver from drivers where invite_token = p_token and not revoked;
+  if not found then
+    return json_build_object('error', 'invalid_token');
+  end if;
+
+  select driver_id, name, total_price into v_owner, v_name, v_total_price from routes where id = p_route_id;
+  if v_owner is null or v_owner <> v_driver.id then
+    return json_build_object('error', 'not_your_route');
+  end if;
+
+  select max(order_index) into v_max_order from route_stops where route_id = p_route_id;
+  if v_max_order is null or v_max_order < 1 then
+    return json_build_object('error', 'route_too_short');
+  end if;
+
+  v_sep_pos := position(' - ' in v_name);
+  if v_sep_pos > 0 then
+    v_new_name := substring(v_name from v_sep_pos + 3) || ' - ' || substring(v_name from 1 for v_sep_pos - 1);
+  else
+    v_new_name := v_name || ' (Rückfahrt)';
+  end if;
+
+  insert into routes (name, total_price, driver_id)
+  values (v_new_name, v_total_price, v_driver.id)
+  returning id into v_new_route_id;
+
+  insert into route_stops (
+    route_id, name, postal_code, street, house_number, country, maps_link,
+    order_index, latitude, longitude, price_to_next, distance_to_next_km, duration_to_next_min
+  )
+  select
+    v_new_route_id,
+    old.name, old.postal_code, old.street, old.house_number, old.country, old.maps_link,
+    (v_max_order - old.order_index),
+    old.latitude, old.longitude,
+    prev.price_to_next, prev.distance_to_next_km, prev.duration_to_next_min
+  from route_stops old
+  left join route_stops prev on prev.route_id = p_route_id and prev.order_index = old.order_index - 1
+  where old.route_id = p_route_id;
+
+  return json_build_object('success', true, 'route_id', v_new_route_id);
+end;
+$$;
+
+grant execute on function fn_driver_create_reverse_route(text, uuid) to anon;
