@@ -151,6 +151,7 @@ normale App nutzbar (Icon auf dem Homescreen), ohne App Store.
    - `supabase/migration_41_mitfahrer_telefon_bei_buchungen.sql` (WhatsApp-Link bei Buchungsübersicht des Fahrers)
    - `supabase/migration_42_sitzplaetze_anpassen.sql` (Sitzplatzanzahl per +/- nachträglich anpassen)
    - `supabase/migration_43_rueckfahrstrecke.sql` (Rückfahrstrecke anlegen)
+   - `supabase/migration_44_fix_rueckfahrstrecke.sql` (Fix: NOT-NULL-Fehler bei price_to_next behoben)
 3. Unter **Authentication → Users** einen Benutzer für dich selbst anlegen
    (E-Mail + Passwort) — das ist dein Admin-Login für `/admin`.
 4. Unter **Project Settings → API** findest du:

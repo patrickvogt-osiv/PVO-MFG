@@ -439,7 +439,16 @@ function DriverRoutesManager({ token, onRoutesChanged, driverRate }) {
     })
     setCreatingReverse(false)
     if (err || data?.error) {
-      alert('Rückfahrstrecke konnte nicht angelegt werden.')
+      console.error('[Rückfahrstrecke] Fehler:', err, data)
+      const messages = {
+        invalid_token: 'Dein Zugangslink ist ungültig oder wurde widerrufen.',
+        not_your_route: 'Diese Strecke gehört nicht zu deinem Konto.',
+        route_too_short: 'Diese Strecke hat zu wenige Stopps für eine Rückfahrstrecke.',
+      }
+      alert(
+        messages[data?.error] ||
+        `Rückfahrstrecke konnte nicht angelegt werden. (${err?.message || data?.error || 'unbekannter Fehler'})`
+      )
       return
     }
     onRoutesChanged?.()

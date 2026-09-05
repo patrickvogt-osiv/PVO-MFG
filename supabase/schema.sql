@@ -2222,7 +2222,7 @@ begin
     old.name, old.postal_code, old.street, old.house_number, old.country, old.maps_link,
     (v_max_order - old.order_index),
     old.latitude, old.longitude,
-    prev.price_to_next, prev.distance_to_next_km, prev.duration_to_next_min
+    coalesce(prev.price_to_next, 0), prev.distance_to_next_km, prev.duration_to_next_min
   from route_stops old
   left join route_stops prev on prev.route_id = p_route_id and prev.order_index = old.order_index - 1
   where old.route_id = p_route_id;

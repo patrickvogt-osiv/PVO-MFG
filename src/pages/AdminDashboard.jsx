@@ -878,7 +878,7 @@ function RoutesTab() {
         country: s.country, maps_link: s.maps_link,
         order_index: maxOrder - idx,
         latitude: s.latitude, longitude: s.longitude,
-        price_to_next: prev ? prev.price_to_next : null,
+        price_to_next: prev ? prev.price_to_next : 0,
         distance_to_next_km: prev ? prev.distance_to_next_km : null,
         duration_to_next_min: prev ? prev.duration_to_next_min : null,
       }
